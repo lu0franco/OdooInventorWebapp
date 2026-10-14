@@ -1,11 +1,22 @@
-<div align="center">
+# OdooInventor
 
-<img width="1200" height="475" alt="GHBanner" src="https://github.com/user-attachments/assets/0aa67016-6eaf-458a-adb2-6e31a0763ed6" />
+Integración de **Autodesk Inventor 2027** con el sistema ERP **Odoo** a través de servicios JSON-RPC.
 
-  <h1>Built with AI Studio</h2>
+## Características
 
-  <p>The fastest path from prompt to production with Gemini.</p>
+- **Prueba de Conectividad JSON-RPC**: Diagnóstico directo con el endpoint `/jsonrpc` de Odoo (método `common.version`), medición de latencia HTTP y visualización detallada de respuestas.
+- **Autodesk Inventor Ribbon & Add-In**: Réplica de la interfaz de Inventor con la pestaña `ODOO`, panel dedicado y comando para ejecutar la prueba de conexión (`OdooTestForm`).
+- **Visualizador CAD 3D**: Renderizado isométrico de ensamblajes (`.iam`) y piezas (`.ipt`), con rotación 3D en tiempo real, desglose de vista explosionada y cálculo de propiedades físicas (masa, volumen, material).
+- **Gestión de iProperties**: Mapeo bidireccional de metadatos de ingeniería con registros `product.template` de Odoo (centro de costos, costo estándar, ubicación de almacén).
+- **Lista de Materiales (BOM) a Odoo MRP**: Sincronización de componentes del ensamble CAD con las listas de materiales de fabricación de Odoo (`mrp.bom` y `mrp.bom.line`), con exportación a CSV.
+- **Catálogo Odoo ERP**: Explorador de inventario y stock de productos vinculados.
+- **Registro de Auditoría**: Trazabilidad completa de llamadas de red y sincronizaciones.
 
-  <a href="https://aistudio.google.com/apps">Start building</a>
+## Ejecución
 
-</div>
+```bash
+npm install
+npm run dev
+```
+
+El servidor web y proxy JSON-RPC se iniciará en el puerto 3000 (`http://localhost:3000`).
