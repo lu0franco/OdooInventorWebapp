@@ -13,6 +13,16 @@ const PORT = parseInt(process.env.PORT || '3000', 10);
 app.use(cors());
 app.use(express.json({ limit: '10mb' }));
 
+// Endpoint para descargar server.ts directamente en la PC local
+app.get('/download/server.ts', (_req: Request, res: Response) => {
+  res.download(path.join(__dirname, 'server.ts'), 'server.ts');
+});
+
+// Endpoint para descargar InventorWebBridge.vb actualizado
+app.get('/download/InventorWebBridge.vb', (_req: Request, res: Response) => {
+  res.download(path.join(__dirname, 'InventorWebBridge.vb'), 'InventorWebBridge.vb');
+});
+
 // ==========================================
 // Odoo JSON-RPC Proxy & API
 // Replicating & extending OdooService.vb
@@ -469,10 +479,15 @@ const cintaTransferenciaFlamarique = {
 };
 
 // Mock / Sample CAD & ERP synchronized database
-const mockState = {
-  activePart: { ...cintaTransferenciaFlamarique },
+const mockState: {
+  activePart: any | null;
+  presets: any[];
+  odooProducts: any[];
+  syncLogs: any[];
+} = {
+  activePart: null, // Sin información inventada por defecto; espera datos reales de Autodesk Inventor
   presets: [
-    { id: 'flamarique', label: 'D-659.00 - CINTA DE TRANSFERENCIA 3 - OT-26148 - FLAMARIQUE', data: cintaTransferenciaFlamarique },
+    { id: 'flamarique', label: 'D-659.00 - CINTA DE TRANSFERENCIA 3 - OT-26148 - FLAMARIQUE (22 piezas)', data: cintaTransferenciaFlamarique },
     { 
       id: 'reductor', 
       label: 'INV-2027-ASM01 - Reductor Planetario Helicoidal v3',
@@ -533,6 +548,11 @@ app.post('/api/inventor/load-preset', (req: Request, res: Response) => {
     return res.json({ success: true, part: mockState.activePart });
   }
   return res.status(404).json({ success: false, error: 'Preset no encontrado' });
+});
+
+app.post('/api/inventor/clear', (_req: Request, res: Response) => {
+  mockState.activePart = null;
+  return res.json({ success: true, message: 'Estado restablecido a espera de Inventor.' });
 });
 
 app.get('/api/odoo/state', (_req: Request, res: Response) => {

@@ -50,8 +50,13 @@ export default function App() {
         console.warn('Could not fetch server state:', err);
       });
 
-    // 2. Check if launched from Inventor with ?session=... or ?import=...
+    // 2. Check URL parameters (?view=..., ?session=..., ?import=...)
     const urlParams = new URLSearchParams(window.location.search);
+    const viewParam = urlParams.get('view');
+    if (viewParam && ['bom', 'iproperties', 'products', 'logs'].includes(viewParam)) {
+      setActiveView(viewParam as 'bom' | 'iproperties' | 'products' | 'logs');
+    }
+
     const sessionId = urlParams.get('session');
     if (sessionId) {
       fetch(`/api/inventor/session/${sessionId}`)
@@ -88,7 +93,7 @@ export default function App() {
                 setPart(resData.session);
                 setActiveView('bom');
                 showNotification('success', `¡${resData.session.bom.length} componentes reales recibidos en vivo desde Inventor!`);
-                window.history.replaceState({}, document.title, window.location.pathname + '?view=bom');
+                window.history.replaceState({}, document.title, window.location.pathname);
               }
             })
             .catch(err => console.error('Error procesando importación:', err));

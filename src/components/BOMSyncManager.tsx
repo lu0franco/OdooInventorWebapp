@@ -30,17 +30,21 @@ import * as XLSX from 'xlsx';
 import { CadPart, BomItem } from '../types';
 
 interface BOMSyncManagerProps {
-  part: CadPart;
+  part: CadPart | null;
   onUpdateBom: (newBom: BomItem[]) => void;
   onSyncBomToOdoo: () => void;
   isSyncing: boolean;
+  onLoadPart?: (part: CadPart) => void;
+  onClearPart?: () => void;
 }
 
 export const BOMSyncManager: React.FC<BOMSyncManagerProps> = ({
   part,
   onUpdateBom,
   onSyncBomToOdoo,
-  isSyncing
+  isSyncing,
+  onLoadPart,
+  onClearPart
 }) => {
   const [searchTerm, setSearchTerm] = useState('');
   const [newItemModal, setNewItemModal] = useState(false);
@@ -98,7 +102,36 @@ export const BOMSyncManager: React.FC<BOMSyncManagerProps> = ({
             odooId: item.odooId || `PROD-${Math.floor(100 + Math.random() * 900)}`,
             status: 'pending'
           }));
-          onUpdateBom(items);
+
+          if (onLoadPart) {
+            const newPart: CadPart = {
+              partNumber: parsed.partNumber || 'ASM-INVENTOR',
+              name: parsed.assemblyName || parsed.description || 'Ensamblaje Autodesk Inventor',
+              fileType: 'iam',
+              revision: parsed.revision || 'Rev. 1',
+              author: parsed.author || 'Inventor Designer',
+              material: parsed.material || 'Acero Inoxidable / Comercial',
+              mass: Number(parsed.mass) || 0,
+              volume: Number(parsed.volume) || 0,
+              dimensions: parsed.dimensions || 'N/A',
+              odooProductId: '1048',
+              syncStatus: 'pending',
+              lastSync: 'Recibido desde Portapapeles de Windows',
+              iProperties: parsed.iProperties || {
+                Title: parsed.description || 'Ensamblaje Inventor',
+                Subject: 'OT-26148',
+                Company: 'Deblasi Soluciones Industriales',
+                Manager: 'Ingeniería Mecánica',
+                CostCenter: 'CC-ING',
+                StandardCost: 0,
+                StockLocation: 'WH/Stock'
+              },
+              bom: items
+            };
+            onLoadPart(newPart);
+          } else {
+            onUpdateBom(items);
+          }
           setClipboardSuccessMsg(`¡${items.length} componentes reales de Inventor recibidos con éxito!`);
           setTimeout(() => setClipboardSuccessMsg(null), 5000);
           return;
@@ -132,7 +165,35 @@ export const BOMSyncManager: React.FC<BOMSyncManagerProps> = ({
       }
 
       if (items.length > 0) {
-        onUpdateBom(items);
+        if (onLoadPart && !part) {
+          const newPart: CadPart = {
+            partNumber: 'ASM-PORTAPAPELES',
+            name: 'Ensamblaje importado desde tabla',
+            fileType: 'iam',
+            revision: 'Rev. 1',
+            author: 'Inventor Designer',
+            material: 'Comercial',
+            mass: 0,
+            volume: 0,
+            dimensions: 'N/A',
+            odooProductId: '1048',
+            syncStatus: 'pending',
+            lastSync: 'Recibido desde Portapapeles',
+            iProperties: {
+              Title: 'Ensamblaje Inventor',
+              Subject: 'Importado',
+              Company: 'Deblasi Soluciones Industriales',
+              Manager: 'Ingeniería',
+              CostCenter: 'CC-ING',
+              StandardCost: 0,
+              StockLocation: 'WH/Stock'
+            },
+            bom: items
+          };
+          onLoadPart(newPart);
+        } else {
+          onUpdateBom(items);
+        }
         setClipboardSuccessMsg(`¡${items.length} componentes importados desde el Portapapeles!`);
         setTimeout(() => setClipboardSuccessMsg(null), 5000);
       } else {
@@ -145,7 +206,8 @@ export const BOMSyncManager: React.FC<BOMSyncManagerProps> = ({
     }
   };
 
-  const filteredBom = part.bom.filter(item => 
+  const bomList = part?.bom || [];
+  const filteredBom = bomList.filter(item => 
     item.partNumber.toLowerCase().includes(searchTerm.toLowerCase()) ||
     item.description.toLowerCase().includes(searchTerm.toLowerCase()) ||
     item.material.toLowerCase().includes(searchTerm.toLowerCase())
@@ -157,7 +219,7 @@ export const BOMSyncManager: React.FC<BOMSyncManagerProps> = ({
 
     const newItem: BomItem = {
       id: Date.now().toString(),
-      item: (part.bom.length + 1).toString(),
+      item: ((part?.bom.length || 0) + 1).toString(),
       partNumber: newPartNumber.trim(),
       description: newDesc.trim(),
       qty: parseFloat(newQty) || 1,
@@ -167,7 +229,7 @@ export const BOMSyncManager: React.FC<BOMSyncManagerProps> = ({
       status: 'pending'
     };
 
-    onUpdateBom([...part.bom, newItem]);
+    onUpdateBom([...(part?.bom || []), newItem]);
     setNewPartNumber('');
     setNewDesc('');
     setNewQty('1');
@@ -176,10 +238,11 @@ export const BOMSyncManager: React.FC<BOMSyncManagerProps> = ({
   };
 
   const handleDeleteItem = (id: string) => {
-    onUpdateBom(part.bom.filter(item => item.id !== id));
+    onUpdateBom((part?.bom || []).filter(item => item.id !== id));
   };
 
   const exportCSV = () => {
+    if (!part) return;
     const headers = 'Item,PartNumber,Description,Quantity,UoM,Material,OdooID,Status\n';
     const rows = part.bom.map(i => 
       `"${i.item}","${i.partNumber}","${i.description}",${i.qty},"${i.uom}","${i.material}","${i.odooId}","${i.status}"`
@@ -328,10 +391,14 @@ export const BOMSyncManager: React.FC<BOMSyncManagerProps> = ({
         body: JSON.stringify({ presetId: 'flamarique' })
       });
       const data = await res.json();
-      if (data.success && data.part?.bom) {
-        onUpdateBom(data.part.bom);
+      if (data.success && data.part) {
+        if (onLoadPart) {
+          onLoadPart(data.part);
+        } else if (data.part.bom) {
+          onUpdateBom(data.part.bom);
+        }
         setIsImportModalOpen(false);
-        setClipboardSuccessMsg(`¡Cargados los ${data.part.bom.length} componentes reales de D-659.00!`);
+        setClipboardSuccessMsg(`¡Cargados los ${data.part.bom.length} componentes de demostración (OT-26148 Flamarique)!`);
         setTimeout(() => setClipboardSuccessMsg(null), 5000);
       }
     } catch {
@@ -341,6 +408,7 @@ export const BOMSyncManager: React.FC<BOMSyncManagerProps> = ({
 
   const handleCreatePurchaseOrder = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (!part) return;
     setIsCreatingPo(true);
     setPoResult(null);
     try {
@@ -617,214 +685,367 @@ End Sub`;
         </div>
       )}
 
-      {/* Hero Sync Workflow Banner: Paso 1 (Inventor -> WebApp) & Paso 2 (WebApp -> Odoo) */}
-      <div className="bg-gradient-to-r from-slate-900 via-slate-850 to-slate-900 border-b border-slate-800 p-4">
-        <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4">
+      {!part ? (
+        /* PANTALLA DE ESPERA ACTIVA: Ningún ensamblaje vinculado */
+        <div className="flex-1 flex flex-col items-center justify-center p-6 text-center max-w-4xl mx-auto overflow-y-auto">
+          <div className="relative mb-5">
+            <div className="absolute -inset-4 rounded-full bg-orange-500/10 blur-xl animate-pulse"></div>
+            <div className="relative p-6 rounded-2xl bg-slate-900 border-2 border-dashed border-orange-500/40 text-orange-400 flex items-center justify-center shadow-xl">
+              <Layers className="w-16 h-16 animate-pulse text-orange-400" />
+            </div>
+          </div>
+
+          {/* Live Listening Badge */}
+          <div className="inline-flex items-center space-x-2 px-3.5 py-1.5 rounded-full bg-emerald-950/80 border border-emerald-700 text-emerald-300 text-xs font-mono mb-3 shadow-md">
+            <span className="w-2.5 h-2.5 rounded-full bg-emerald-400 animate-ping"></span>
+            <span className="font-semibold">EN ESCUCHA ACTIVA — Esperando transmisión desde Autodesk Inventor</span>
+          </div>
+
+          <h2 className="text-2xl font-bold text-slate-100 tracking-tight">
+            Esperando sincronización de Ensamblaje (.iam)
+          </h2>
           
-          {/* Assembly Header & Status */}
-          <div className="flex items-start space-x-3">
-            <div className="p-2.5 rounded-xl bg-orange-500/10 border border-orange-500/30 text-orange-400 shrink-0">
-              <Layers className="w-6 h-6" />
-            </div>
-            <div>
-              <div className="flex items-center space-x-2 flex-wrap gap-y-1">
-                <span className="text-xs font-bold text-orange-400 uppercase tracking-wider font-mono">
-                  LDM de Ingeniería Activa
-                </span>
-                <span className="text-xs bg-orange-500/20 text-orange-300 font-mono font-bold px-2 py-0.5 rounded border border-orange-500/30">
-                  {part.partNumber}.iam
-                </span>
-                <span className="text-xs bg-slate-800 text-slate-300 px-2 py-0.5 rounded border border-slate-700 font-mono">
-                  {part.bom.length} Componentes Reales
-                </span>
-                <span className="text-xs bg-emerald-950/80 text-emerald-300 px-2 py-0.5 rounded border border-emerald-800 flex items-center space-x-1">
-                  <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse"></span>
-                  <span>Enlace CAD Listo</span>
-                </span>
+          <p className="text-sm text-slate-400 mt-2 max-w-2xl leading-relaxed">
+            No hay ningún ensamblaje vinculado actualmente. <strong className="text-slate-200">No inventamos componentes ficticios.</strong> Cuando pulses el botón <strong className="text-orange-400">"Sincronizar BOM"</strong> en Autodesk Inventor, la estructura real de tus componentes aparecerá aquí al instante.
+          </p>
+
+          {/* 3 Main Action Cards */}
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-4 w-full mt-7 text-left">
+            {/* Card 1: Portapapeles (Fastest) */}
+            <div className="p-4 rounded-xl bg-slate-900/90 border border-emerald-500/40 hover:border-emerald-500 transition shadow-lg flex flex-col justify-between">
+              <div>
+                <div className="flex items-center space-x-2 text-emerald-400 mb-2">
+                  <Copy className="w-5 h-5" />
+                  <span className="font-bold text-xs uppercase tracking-wide">Método Rápido</span>
+                </div>
+                <h3 className="font-bold text-slate-200 text-sm">Pegar del Portapapeles</h3>
+                <p className="text-xs text-slate-400 mt-1">
+                  Al tocar "Sincronizar BOM" en Inventor, el Add-In copia automáticamente toda la LDM al portapapeles de Windows.
+                </p>
               </div>
-              <h2 className="text-base font-bold text-slate-100 mt-1">
-                {part.name}
-              </h2>
-              <p className="text-xs text-slate-400 mt-0.5">
-                Desglose completo de {part.bom.reduce((acc, curr) => acc + curr.qty, 0)} unidades físicas. Sin simulaciones: podés pegar la LDM en caliente desde Inventor o transferirla a Odoo ERP.
-              </p>
+              <button
+                onClick={handlePasteFromClipboard}
+                className="mt-4 w-full py-2 bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs rounded-lg flex items-center justify-center space-x-2 transition shadow"
+              >
+                <Copy className="w-4 h-4" />
+                <span>📋 Pegar LDM del Portapapeles</span>
+              </button>
+            </div>
+
+            {/* Card 2: Archivo local de Inventor */}
+            <div className="p-4 rounded-xl bg-slate-900/90 border border-slate-800 hover:border-slate-700 transition shadow flex flex-col justify-between">
+              <div>
+                <div className="flex items-center space-x-2 text-blue-400 mb-2">
+                  <Upload className="w-5 h-5" />
+                  <span className="font-bold text-xs uppercase tracking-wide">Archivo Local</span>
+                </div>
+                <h3 className="font-bold text-slate-200 text-sm">Importar Archivo</h3>
+                <p className="text-xs text-slate-400 mt-1">
+                  El Add-In guarda una copia en <code className="text-blue-300 font-mono text-[11px]">C:\OdooInventor\bom_export.json</code> o podés cargar un Excel/CSV.
+                </p>
+              </div>
+              <button
+                onClick={() => { setImportTab('excel'); setIsImportModalOpen(true); }}
+                className="mt-4 w-full py-2 bg-slate-800 hover:bg-slate-700 text-slate-200 font-semibold text-xs rounded-lg flex items-center justify-center space-x-2 transition border border-slate-700"
+              >
+                <Upload className="w-4 h-4 text-blue-400" />
+                <span>📁 Cargar Archivo</span>
+              </button>
+            </div>
+
+            {/* Card 3: Regla iLogic */}
+            <div className="p-4 rounded-xl bg-slate-900/90 border border-slate-800 hover:border-slate-700 transition shadow flex flex-col justify-between">
+              <div>
+                <div className="flex items-center space-x-2 text-amber-400 mb-2">
+                  <FileCode className="w-5 h-5" />
+                  <span className="font-bold text-xs uppercase tracking-wide">Alternativa Directa</span>
+                </div>
+                <h3 className="font-bold text-slate-200 text-sm">Regla iLogic de 1 Clic</h3>
+                <p className="text-xs text-slate-400 mt-1">
+                  Si no deseás compilar el Add-In DLL, copiá esta regla en tu Inventor y ejecutala con 1 clic para transmitir.
+                </p>
+              </div>
+              <button
+                onClick={() => { setImportTab('ilogic'); setIsImportModalOpen(true); }}
+                className="mt-4 w-full py-2 bg-slate-800 hover:bg-slate-700 text-amber-300 font-semibold text-xs rounded-lg flex items-center justify-center space-x-2 transition border border-slate-700"
+              >
+                <FileCode className="w-4 h-4" />
+                <span>💻 Ver Código iLogic</span>
+              </button>
             </div>
           </div>
 
-          {/* Quick Action Ribbon */}
-          <div className="flex items-center flex-wrap gap-2">
-            
-            {/* Botón 1: Pegar Portapapeles Directo */}
-            <button
-              onClick={handlePasteFromClipboard}
-              className="px-3.5 py-2 bg-emerald-600 hover:bg-emerald-500 active:bg-emerald-700 text-white font-bold text-xs rounded-lg border border-emerald-400/40 flex items-center space-x-2 shadow-lg transition"
-              title="Pegar los componentes que Inventor acaba de copiar al portapapeles"
-            >
-              <Copy className="w-4 h-4 text-emerald-200" />
-              <span>📋 Pegar LDM del Portapapeles</span>
-            </button>
+          {/* Diagnostics & URL guidance */}
+          <div className="mt-7 w-full p-4 rounded-xl bg-slate-900/70 border border-slate-800 text-left">
+            <div className="flex items-center justify-between flex-wrap gap-2 mb-2">
+              <span className="text-xs font-bold text-slate-300 uppercase tracking-wide font-mono flex items-center space-x-2">
+                <span className="w-2 h-2 rounded-full bg-blue-400"></span>
+                <span>URL Activa de Enlace para Autodesk Inventor</span>
+              </span>
+              <div className="flex items-center space-x-2">
+                <button
+                  onClick={() => copyToClipboard(publicWebAppUrl, 'url')}
+                  className="px-2.5 py-1 bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs rounded border border-slate-700 flex items-center space-x-1"
+                >
+                  {copiedUrl ? <Check className="w-3 h-3 text-emerald-400" /> : <Copy className="w-3 h-3" />}
+                  <span>{copiedUrl ? '¡Copiada!' : 'Copiar URL'}</span>
+                </button>
+                <button
+                  onClick={downloadIni}
+                  className="px-2.5 py-1 bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs rounded border border-slate-700 flex items-center space-x-1"
+                  title="Descargar archivo config.ini para guardarlo en C:\OdooInventor\config.ini"
+                >
+                  <Download className="w-3 h-3 text-orange-400" />
+                  <span>Descargar config.ini</span>
+                </button>
+              </div>
+            </div>
 
-            {/* Botón 2: Importar / Archivo / iLogic */}
-            <button
-              onClick={() => setIsImportModalOpen(true)}
-              className="px-3.5 py-2 bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-semibold rounded-lg border border-slate-700 flex items-center space-x-2 transition"
-              title="Cargar archivo bom_export.json, Excel, o usar la regla iLogic de 1 clic"
-            >
-              <Upload className="w-4 h-4 text-blue-400" />
-              <span>Importar / iLogic</span>
-            </button>
+            <div className="bg-slate-950 p-2.5 rounded border border-slate-800 font-mono text-xs text-emerald-400 break-all select-all">
+              {publicWebAppUrl}
+            </div>
 
-            {/* Botón 3: Paso a Odoo ERP (mrp.bom) */}
-            <button
-              onClick={() => setIsOdooSyncModalOpen(true)}
-              className="px-4 py-2 bg-gradient-to-r from-orange-600 to-amber-600 hover:from-orange-500 hover:to-amber-500 text-white font-bold text-xs rounded-lg shadow-lg flex items-center space-x-2 transition"
-              title="Verificar y llevar toda esta LDM al módulo de Fabricación de Odoo (mrp.bom)"
-            >
-              <Database className="w-4 h-4 text-orange-200" />
-              <span>Llevar LDM a Odoo (mrp.bom)</span>
-              <ArrowRight className="w-3.5 h-3.5 text-orange-200" />
-            </button>
+            <p className="text-[11px] text-slate-400 mt-2">
+              ⚠️ <strong>Importante sobre errores 404:</strong> Si en Inventor antes se abría una dirección terminada en <code className="text-rose-400">ais-pre-...</code> o con <code className="text-rose-400">/?view=bom</code>, arrojaba "Page not found" porque la URL real de ejecución es la que ves arriba (o <code className="text-blue-300">http://localhost:3000</code> si ejecutás localmente).
+            </p>
           </div>
 
-        </div>
-      </div>
-
-      {/* Secondary Tool Bar */}
-      <div className="p-3 bg-slate-900 border-b border-slate-800 flex items-center justify-between flex-wrap gap-2">
-        <div className="flex items-center space-x-3">
-          <div className="relative w-72">
-            <Search className="w-3.5 h-3.5 text-slate-400 absolute left-2.5 top-1/2 -translate-y-1/2" />
-            <input
-              type="text"
-              value={searchTerm}
-              onChange={(e) => setSearchTerm(e.target.value)}
-              placeholder="Buscar por código, descripción, material..."
-              className="w-full pl-8 pr-3 py-1 bg-slate-950 border border-slate-800 rounded text-xs text-slate-200 focus:outline-none focus:border-orange-500 font-sans"
-            />
-          </div>
-          <div className="text-xs text-slate-400">
-            Mostrando <b className="text-slate-200 font-mono">{filteredBom.length}</b> de <b className="text-slate-200 font-mono">{part.bom.length}</b> componentes
+          {/* Demo Mode Button */}
+          <div className="mt-6 pt-4 border-t border-slate-800/80 w-full flex items-center justify-between text-xs text-slate-400">
+            <span>¿Querés probar el traspaso a Odoo ERP sin tener Inventor abierto ahora?</span>
+            <button
+              onClick={handleLoadFlamariquePreset}
+              className="px-3.5 py-1.5 bg-slate-800 hover:bg-slate-700 text-orange-300 hover:text-white font-medium rounded-lg border border-slate-700 flex items-center space-x-1.5 transition"
+            >
+              <Sparkles className="w-3.5 h-3.5 text-orange-400" />
+              <span>🧪 Cargar Ensamble Flamarique (Demo 22 piezas)</span>
+            </button>
           </div>
         </div>
+      ) : (
+        <>
+          {/* Hero Sync Workflow Banner: Paso 1 (Inventor -> WebApp) & Paso 2 (WebApp -> Odoo) */}
+          <div className="bg-gradient-to-r from-slate-900 via-slate-850 to-slate-900 border-b border-slate-800 p-4">
+            <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4">
+              
+              {/* Assembly Header & Status */}
+              <div className="flex items-start space-x-3">
+                <div className="p-2.5 rounded-xl bg-orange-500/10 border border-orange-500/30 text-orange-400 shrink-0">
+                  <Layers className="w-6 h-6" />
+                </div>
+                <div>
+                  <div className="flex items-center space-x-2 flex-wrap gap-y-1">
+                    <span className="text-xs font-bold text-orange-400 uppercase tracking-wider font-mono">
+                      LDM de Ingeniería Activa
+                    </span>
+                    <span className="text-xs bg-orange-500/20 text-orange-300 font-mono font-bold px-2 py-0.5 rounded border border-orange-500/30">
+                      {part.partNumber}.iam
+                    </span>
+                    <span className="text-xs bg-slate-800 text-slate-300 px-2 py-0.5 rounded border border-slate-700 font-mono">
+                      {part.bom.length} Componentes Reales
+                    </span>
+                    <span className="text-xs bg-emerald-950/80 text-emerald-300 px-2 py-0.5 rounded border border-emerald-800 flex items-center space-x-1">
+                      <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse"></span>
+                      <span>Enlace CAD Listo</span>
+                    </span>
+                  </div>
+                  <h2 className="text-base font-bold text-slate-100 mt-1">
+                    {part.name}
+                  </h2>
+                  <p className="text-xs text-slate-400 mt-0.5">
+                    Desglose completo de {part.bom.reduce((acc, curr) => acc + curr.qty, 0)} unidades físicas. Sin simulaciones: podés pegar la LDM en caliente desde Inventor o transferirla a Odoo ERP.
+                  </p>
+                </div>
+              </div>
 
-        {/* Secondary Actions */}
-        <div className="flex items-center space-x-2">
-          <button
-            onClick={() => setNewItemModal(true)}
-            className="px-2.5 py-1 bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs rounded border border-slate-700 flex items-center space-x-1.5 transition"
-          >
-            <Plus className="w-3.5 h-3.5 text-orange-400" />
-            <span>Añadir Pieza Manual</span>
-          </button>
+              {/* Quick Action Ribbon */}
+              <div className="flex items-center flex-wrap gap-2">
+                
+                {/* Botón 1: Pegar Portapapeles Directo */}
+                <button
+                  onClick={handlePasteFromClipboard}
+                  className="px-3.5 py-2 bg-emerald-600 hover:bg-emerald-500 active:bg-emerald-700 text-white font-bold text-xs rounded-lg border border-emerald-400/40 flex items-center space-x-2 shadow-lg transition"
+                  title="Pegar los componentes que Inventor acaba de copiar al portapapeles"
+                >
+                  <Copy className="w-4 h-4 text-emerald-200" />
+                  <span>📋 Pegar LDM del Portapapeles</span>
+                </button>
 
-          <button
-            onClick={exportCSV}
-            className="px-2.5 py-1 bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs rounded border border-slate-700 flex items-center space-x-1.5 transition"
-            title="Descargar lista de materiales en formato CSV"
-          >
-            <FileSpreadsheet className="w-3.5 h-3.5 text-emerald-400" />
-            <span>Exportar CSV</span>
-          </button>
+                {/* Botón 2: Importar / Archivo / iLogic */}
+                <button
+                  onClick={() => setIsImportModalOpen(true)}
+                  className="px-3.5 py-2 bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-semibold rounded-lg border border-slate-700 flex items-center space-x-2 transition"
+                  title="Cargar archivo bom_export.json, Excel, o usar la regla iLogic de 1 clic"
+                >
+                  <Upload className="w-4 h-4 text-blue-400" />
+                  <span>Importar / iLogic</span>
+                </button>
 
-          <button
-            onClick={() => setIsPoModalOpen(true)}
-            className="px-3 py-1 bg-emerald-800 hover:bg-emerald-700 text-white font-semibold text-xs rounded border border-emerald-600 flex items-center space-x-1.5 transition"
-            title="Generar orden de compra (purchase.order) para insumos y piezas comerciales"
-          >
-            <ShoppingCart className="w-3.5 h-3.5 text-emerald-200" />
-            <span>Crear Pedido de Compra (PO)</span>
-          </button>
+                {/* Botón 3: Paso a Odoo ERP (mrp.bom) */}
+                <button
+                  onClick={() => setIsOdooSyncModalOpen(true)}
+                  className="px-4 py-2 bg-gradient-to-r from-orange-600 to-amber-600 hover:from-orange-500 hover:to-amber-500 text-white font-bold text-xs rounded-lg shadow-lg flex items-center space-x-2 transition"
+                  title="Verificar y llevar toda esta LDM al módulo de Fabricación de Odoo (mrp.bom)"
+                >
+                  <Database className="w-4 h-4 text-orange-200" />
+                  <span>Llevar LDM a Odoo (mrp.bom)</span>
+                  <ArrowRight className="w-3.5 h-3.5 text-orange-200" />
+                </button>
 
-          <button
-            onClick={onSyncBomToOdoo}
-            disabled={isSyncing}
-            className="px-3.5 py-1 bg-orange-600 hover:bg-orange-500 text-white font-semibold text-xs rounded flex items-center space-x-1.5 shadow transition disabled:opacity-50"
-          >
-            <RefreshCw className={`w-3.5 h-3.5 ${isSyncing ? 'animate-spin' : ''}`} />
-            <span>{isSyncing ? 'Sincronizando...' : 'Sincronizar Rápido a Odoo'}</span>
-          </button>
-        </div>
-      </div>
-
-      {/* BOM Table (Hero View - 100% focused on components & engineering attributes) */}
-      <div className="flex-1 overflow-auto">
-        <table className="w-full text-left text-xs border-collapse">
-          <thead className="bg-slate-900 sticky top-0 text-slate-400 uppercase tracking-wider font-semibold border-b border-slate-800 select-none z-10 shadow-sm">
-            <tr>
-              <th className="py-2.5 px-3 w-14 text-center">Ítem</th>
-              <th className="py-2.5 px-3">Número de Pieza (CAD / Ref)</th>
-              <th className="py-2.5 px-3">Descripción Técnica del Componente</th>
-              <th className="py-2.5 px-3 w-20 text-right">Cant.</th>
-              <th className="py-2.5 px-3 w-24">Unidad</th>
-              <th className="py-2.5 px-3">Material Especificado</th>
-              <th className="py-2.5 px-3">Mapeo Odoo</th>
-              <th className="py-2.5 px-3 w-28 text-center">Estado Odoo</th>
-              <th className="py-2.5 px-3 w-16 text-center">Acción</th>
-            </tr>
-          </thead>
-          <tbody className="divide-y divide-slate-800/80 font-mono">
-            {filteredBom.map((item) => (
-              <tr 
-                key={item.id} 
-                className="hover:bg-slate-900/90 transition-colors group"
-              >
-                <td className="py-2 px-3 text-center text-slate-500 font-bold">
-                  {item.item}
-                </td>
-                <td className="py-2 px-3 font-semibold text-orange-400 group-hover:text-orange-300">
-                  {item.partNumber}
-                </td>
-                <td className="py-2 px-3 font-sans text-slate-200">
-                  {item.description}
-                </td>
-                <td className="py-2 px-3 text-right font-bold text-slate-100">
-                  {item.qty}
-                </td>
-                <td className="py-2 px-3 font-sans text-slate-400">
-                  {item.uom}
-                </td>
-                <td className="py-2 px-3 font-sans text-slate-300">
-                  {item.material}
-                </td>
-                <td className="py-2 px-3 text-emerald-400 font-semibold">
-                  {item.odooId}
-                </td>
-                <td className="py-2 px-3 text-center">
-                  <span className={`inline-flex items-center space-x-1 px-2 py-0.5 rounded-full text-[10px] font-sans ${
-                    item.status === 'synced'
-                      ? 'bg-emerald-950/80 text-emerald-300 border border-emerald-800'
-                      : 'bg-amber-950/80 text-amber-300 border border-amber-800'
-                  }`}>
-                    {item.status === 'synced' ? (
-                      <>
-                        <CheckCircle2 className="w-3 h-3" />
-                        <span>Sincronizado</span>
-                      </>
-                    ) : (
-                      <>
-                        <AlertCircle className="w-3 h-3" />
-                        <span>Pendiente</span>
-                      </>
-                    )}
-                  </span>
-                </td>
-                <td className="py-2 px-3 text-center">
+                {/* Botón 4: Desvincular / Reset */}
+                {onClearPart && (
                   <button
-                    onClick={() => handleDeleteItem(item.id)}
-                    className="p-1 text-slate-500 hover:text-rose-400 hover:bg-rose-950/40 rounded transition"
-                    title="Eliminar componente de la lista"
+                    onClick={onClearPart}
+                    className="px-2.5 py-2 bg-slate-800/80 hover:bg-rose-950/60 hover:text-rose-300 text-slate-400 text-xs rounded-lg border border-slate-700 flex items-center space-x-1.5 transition"
+                    title="Desvincular ensamble actual y volver a la pantalla de espera de Inventor"
                   >
                     <Trash2 className="w-3.5 h-3.5" />
+                    <span>Desvincular</span>
                   </button>
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
+                )}
+              </div>
+
+            </div>
+          </div>
+
+          {/* Secondary Tool Bar */}
+          <div className="p-3 bg-slate-900 border-b border-slate-800 flex items-center justify-between flex-wrap gap-2">
+            <div className="flex items-center space-x-3">
+              <div className="relative w-72">
+                <Search className="w-3.5 h-3.5 text-slate-400 absolute left-2.5 top-1/2 -translate-y-1/2" />
+                <input
+                  type="text"
+                  value={searchTerm}
+                  onChange={(e) => setSearchTerm(e.target.value)}
+                  placeholder="Buscar por código, descripción, material..."
+                  className="w-full pl-8 pr-3 py-1 bg-slate-950 border border-slate-800 rounded text-xs text-slate-200 focus:outline-none focus:border-orange-500 font-sans"
+                />
+              </div>
+              <div className="text-xs text-slate-400">
+                Mostrando <b className="text-slate-200 font-mono">{filteredBom.length}</b> de <b className="text-slate-200 font-mono">{part.bom.length}</b> componentes
+              </div>
+            </div>
+
+            {/* Secondary Actions */}
+            <div className="flex items-center space-x-2">
+              <button
+                onClick={() => setNewItemModal(true)}
+                className="px-2.5 py-1 bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs rounded border border-slate-700 flex items-center space-x-1.5 transition"
+              >
+                <Plus className="w-3.5 h-3.5 text-orange-400" />
+                <span>Añadir Pieza Manual</span>
+              </button>
+
+              <button
+                onClick={exportCSV}
+                className="px-2.5 py-1 bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs rounded border border-slate-700 flex items-center space-x-1.5 transition"
+                title="Descargar lista de materiales en formato CSV"
+              >
+                <FileSpreadsheet className="w-3.5 h-3.5 text-emerald-400" />
+                <span>Exportar CSV</span>
+              </button>
+
+              <button
+                onClick={() => setIsPoModalOpen(true)}
+                className="px-3 py-1 bg-emerald-800 hover:bg-emerald-700 text-white font-semibold text-xs rounded border border-emerald-600 flex items-center space-x-1.5 transition"
+                title="Generar orden de compra (purchase.order) para insumos y piezas comerciales"
+              >
+                <ShoppingCart className="w-3.5 h-3.5 text-emerald-200" />
+                <span>Crear Pedido de Compra (PO)</span>
+              </button>
+
+              <button
+                onClick={onSyncBomToOdoo}
+                disabled={isSyncing}
+                className="px-3.5 py-1 bg-orange-600 hover:bg-orange-500 text-white font-semibold text-xs rounded flex items-center space-x-1.5 shadow transition disabled:opacity-50"
+              >
+                <RefreshCw className={`w-3.5 h-3.5 ${isSyncing ? 'animate-spin' : ''}`} />
+                <span>{isSyncing ? 'Sincronizando...' : 'Sincronizar Rápido a Odoo'}</span>
+              </button>
+            </div>
+          </div>
+
+          {/* BOM Table (Hero View - 100% focused on components & engineering attributes) */}
+          <div className="flex-1 overflow-auto">
+            <table className="w-full text-left text-xs border-collapse">
+              <thead className="bg-slate-900 sticky top-0 text-slate-400 uppercase tracking-wider font-semibold border-b border-slate-800 select-none z-10 shadow-sm">
+                <tr>
+                  <th className="py-2.5 px-3 w-14 text-center">Ítem</th>
+                  <th className="py-2.5 px-3">Número de Pieza (CAD / Ref)</th>
+                  <th className="py-2.5 px-3">Descripción Técnica del Componente</th>
+                  <th className="py-2.5 px-3 w-20 text-right">Cant.</th>
+                  <th className="py-2.5 px-3 w-24">Unidad</th>
+                  <th className="py-2.5 px-3">Material Especificado</th>
+                  <th className="py-2.5 px-3">Mapeo Odoo</th>
+                  <th className="py-2.5 px-3 w-28 text-center">Estado Odoo</th>
+                  <th className="py-2.5 px-3 w-16 text-center">Acción</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-800/80 font-mono">
+                {filteredBom.map((item) => (
+                  <tr 
+                    key={item.id} 
+                    className="hover:bg-slate-900/90 transition-colors group"
+                  >
+                    <td className="py-2 px-3 text-center text-slate-500 font-bold">
+                      {item.item}
+                    </td>
+                    <td className="py-2 px-3 font-semibold text-orange-400 group-hover:text-orange-300">
+                      {item.partNumber}
+                    </td>
+                    <td className="py-2 px-3 font-sans text-slate-200">
+                      {item.description}
+                    </td>
+                    <td className="py-2 px-3 text-right font-bold text-slate-100">
+                      {item.qty}
+                    </td>
+                    <td className="py-2 px-3 font-sans text-slate-400">
+                      {item.uom}
+                    </td>
+                    <td className="py-2 px-3 font-sans text-slate-300">
+                      {item.material}
+                    </td>
+                    <td className="py-2 px-3 text-emerald-400 font-semibold">
+                      {item.odooId}
+                    </td>
+                    <td className="py-2 px-3 text-center">
+                      <span className={`inline-flex items-center space-x-1 px-2 py-0.5 rounded-full text-[10px] font-sans ${
+                        item.status === 'synced'
+                          ? 'bg-emerald-950/80 text-emerald-300 border border-emerald-800'
+                          : 'bg-amber-950/80 text-amber-300 border border-amber-800'
+                      }`}>
+                        {item.status === 'synced' ? (
+                          <>
+                            <CheckCircle2 className="w-3 h-3" />
+                            <span>Sincronizado</span>
+                          </>
+                        ) : (
+                          <>
+                            <AlertCircle className="w-3 h-3" />
+                            <span>Pendiente</span>
+                          </>
+                        )}
+                      </span>
+                    </td>
+                    <td className="py-2 px-3 text-center">
+                      <button
+                        onClick={() => handleDeleteItem(item.id)}
+                        className="p-1 text-slate-500 hover:text-rose-400 hover:bg-rose-950/40 rounded transition"
+                        title="Eliminar componente de la lista"
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                      </button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </>
+      )}
 
       {/* Modal: Paso a Odoo ERP (Llevar la LDM a mrp.bom) */}
-      {isOdooSyncModalOpen && (
+      {isOdooSyncModalOpen && part && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/85 backdrop-blur-sm p-4">
           <div className="bg-slate-900 border border-slate-700 rounded-xl p-5 w-full max-w-3xl shadow-2xl space-y-4 max-h-[90vh] flex flex-col">
             
@@ -1327,7 +1548,7 @@ End Sub`;
 
             <form onSubmit={handleCreatePurchaseOrder} className="space-y-3 text-xs">
               <p className="text-slate-300">
-                Crea una orden de compra en Odoo con las <b>{part.bom.length} líneas de la LDM</b> de <code>{part.partNumber}</code>.
+                Crea una orden de compra en Odoo con las <b>{part?.bom.length ?? 0} líneas de la LDM</b> de <code>{part?.partNumber ?? ''}</code>.
               </p>
 
               <div className="grid grid-cols-2 gap-3">
