@@ -187,32 +187,19 @@ app.post('/api/odoo/authenticate', async (req: Request, res: Response) => {
 
     const data = await response.json();
     if (data.error) {
-      const rawError = data.error.data?.message || data.error.message || JSON.stringify(data.error);
-      let friendlyError = rawError;
-
-      if (rawError.includes('does not exist')) {
-        friendlyError = `La base de datos "${db}" no existe en el servidor de Adhoc. En plataformas como Adhoc, el nombre de la base de datos interna puede diferir del subdominio. Para averiguar el nombre exacto de tu base de datos sin modo desarrollador: abrí tu Odoo en el navegador, presioná F12 (Consola) y ejecutá: odoo.__session_info__.db`;
-      } else if (rawError.includes('AccessDenied') || rawError.includes('Access Denied')) {
-        friendlyError = `Acceso denegado en Odoo para el usuario "${login}" en la base "${db}". Verificá que la contraseña o API Key sea la correcta. Nota: Si tenés autenticación de dos pasos (2FA), debés usar una Clave de API creada desde tus Preferencias de usuario.`;
-      }
-
-      return res.json({ 
-        success: false, 
-        error: friendlyError,
-        rawError
-      });
+      return res.json({ success: false, error: data.error.data?.message || data.error.message });
     }
 
     const uid = data.result;
     return res.json({
       success: Boolean(uid),
       uid: uid || null,
-      message: uid ? `¡Autenticación exitosa en Odoo! UID: ${uid}` : 'Credenciales inválidas (usuario o contraseña/API Key no coinciden con la base de datos especificada).'
+      message: uid ? 'Autenticación exitosa en Odoo' : 'Credenciales inválidas'
     });
   } catch (err: any) {
     return res.json({
       success: false,
-      error: `Error de red al conectar con ${jsonRpcUrl}: ${err.message}`
+      error: `Error al autenticar: ${err.message}`
     });
   }
 });
@@ -303,88 +290,33 @@ app.post('/api/odoo/create-purchase-order', async (req: Request, res: Response) 
 
     // 3. For each LDM item, find or create product and add to purchase.order.line
     let createdLines = 0;
-    let productsCreatedCount = 0;
-    let fallbackLinesCount = 0;
-
-    // Get default UoM ID if available
-    let defaultUomId = 1;
-    try {
-      const uoms = await executeKw('uom.uom', 'search_read', [[]], { fields: ['id', 'name'], limit: 1 });
-      if (uoms && uoms.length > 0) {
-        defaultUomId = uoms[0].id;
-      }
-    } catch {
-      // Keep default 1
-    }
-
-    const todayStr = new Date().toISOString().substring(0, 10);
-
     for (const item of items) {
-      if (!item.partNumber && !item.description) continue;
+      if (!item.partNumber) continue;
 
-      const partNum = (item.partNumber || '').trim();
-      const desc = (item.description || item.partNumber || 'Componente LDM').trim();
-      const qty = Number(item.qty || item.quantity || 1);
+      // Search product.product
+      const found = await executeKw('product.product', 'search_read', [
+        [['default_code', '=', item.partNumber.trim()]]
+      ], { fields: ['id', 'name'], limit: 1 });
 
-      let productId: number | null = null;
-
-      // 3.1 Try to search existing product in Odoo catalog
-      if (partNum) {
-        try {
-          const found = await executeKw('product.product', 'search_read', [
-            ['|', ['default_code', '=', partNum], ['name', '=', partNum]]
-          ], { fields: ['id', 'name', 'uom_po_id', 'uom_id'], limit: 1 });
-
-          if (found && found.length > 0) {
-            productId = found[0].id;
-          }
-        } catch (searchErr: any) {
-          console.warn(`Error buscando producto ${partNum}:`, searchErr.message);
-        }
+      let productId = found?.[0]?.id;
+      if (!productId) {
+        // Create product
+        productId = await executeKw('product.product', 'create', [{
+          default_code: item.partNumber.trim(),
+          name: item.description || item.partNumber,
+          type: 'consu'
+        }]);
       }
 
-      // 3.2 If not found, attempt to create product in Odoo catalog
-      if (!productId && partNum) {
-        try {
-          productId = await executeKw('product.product', 'create', [{
-            default_code: partNum,
-            name: desc,
-            type: 'consu'
-          }]);
-          productsCreatedCount++;
-        } catch (prodErr: any) {
-          // If user lacks 'Products Management' permission, catch gracefully and fallback to descriptive line
-          console.warn(`Usuario sin permiso 'Products Management' para crear producto ${partNum}. Continuando como línea de compra directa.`);
-          fallbackLinesCount++;
-        }
-      }
-
-      // 3.3 Add line to purchase.order.line
-      try {
-        const linePayload: any = {
-          order_id: orderId,
-          name: partNum ? `[${partNum}] ${desc}` : desc,
-          product_qty: qty,
-          price_unit: Number(item.unitPrice || 0),
-          date_planned: todayStr
-        };
-
-        if (productId) {
-          linePayload.product_id = productId;
-        } else {
-          linePayload.product_uom = defaultUomId;
-        }
-
-        await executeKw('purchase.order.line', 'create', [linePayload]);
-        createdLines++;
-      } catch (lineErr: any) {
-        console.error(`Error creando línea de compra para ${partNum}:`, lineErr.message);
-      }
+      // Add line to purchase.order.line
+      await executeKw('purchase.order.line', 'create', [{
+        order_id: orderId,
+        product_id: productId,
+        name: item.description || item.partNumber,
+        product_qty: Number(item.qty || item.quantity || 1)
+      }]);
+      createdLines++;
     }
-
-    const permissionNote = fallbackLinesCount > 0 
-      ? ` (Nota: ${fallbackLinesCount} ítems se crearon como líneas de compra directas porque el usuario no tiene permisos de 'Products Management' para registrar nuevos productos en el catálogo maestro de Odoo).`
-      : '';
 
     const newLog = {
       id: Date.now(),
@@ -392,7 +324,7 @@ app.post('/api/odoo/create-purchase-order', async (req: Request, res: Response) 
       action: 'PURCHASE_ORDER',
       target: `purchase.order [${orderName}]`,
       status: 'OK',
-      details: `Pedido de compra real ${orderName} creado en Odoo con ${createdLines} líneas.${permissionNote}`
+      details: `Pedido de compra real ${orderName} creado en Odoo con ${createdLines} líneas.`
     };
     mockState.syncLogs.unshift(newLog);
 
@@ -401,9 +333,7 @@ app.post('/api/odoo/create-purchase-order', async (req: Request, res: Response) 
       orderId,
       orderName,
       linesCount: createdLines,
-      productsCreatedCount,
-      fallbackLinesCount,
-      message: `¡Pedido de compra ${orderName} generado en Odoo con ${createdLines} líneas de la LDM!${permissionNote}`
+      message: `¡Pedido de compra ${orderName} generado en Odoo con ${createdLines} líneas de la LDM!`
     });
 
   } catch (err: any) {
