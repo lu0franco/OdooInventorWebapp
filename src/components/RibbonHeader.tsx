@@ -75,9 +75,9 @@ export const RibbonHeader: React.FC<RibbonHeaderProps> = ({
     switch (environment) {
       case 'Assembly':
         return { 
-          ext: '.iam', 
-          name: part ? `${part.partNumber}.iam — ${part.name}` : 'D-659.00 - CINTA DE TRANSFERENCIA 3 - OT-26148 - FLAMARIQUE.iam', 
-          color: 'bg-orange-500/20 text-orange-300' 
+          ext: part ? '.iam' : 'CAD', 
+          name: part ? `${part.partNumber}.iam — ${part.name}` : 'Esperando transmisión desde Autodesk Inventor...', 
+          color: part ? 'bg-orange-500/20 text-orange-300' : 'bg-amber-500/20 text-amber-300' 
         };
       case 'Part':
         return { ext: '.ipt', name: 'D-659.01.03.ipt — COSTILLA CAJÓN', color: 'bg-blue-500/20 text-blue-300' };

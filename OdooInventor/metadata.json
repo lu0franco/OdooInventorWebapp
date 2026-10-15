@@ -1,0 +1,4 @@
+{
+  "name": "OdooInventor",
+  "description": "Autodesk Inventor & Odoo ERP integration hub — test JSON-RPC connectivity, synchronize parts, BOMs, inventory, and manage CAD-ERP workflows."
+}

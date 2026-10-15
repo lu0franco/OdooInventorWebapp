@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Addin Type="Standard">
+	<ClassId>{b64d2c5b-1eb1-46ab-b3f2-d780733b00bc}</ClassId>
+	<ClientId>{b64d2c5b-1eb1-46ab-b3f2-d780733b00bc}</ClientId>
+	<DisplayName>OdooInventor</DisplayName>
+	<Description>OdooInventor para Inventor 2027</Description>
+	<Assembly>OdooInventor.dll</Assembly>
+	<LoadOnStartUp>1</LoadOnStartUp>
+	<UserUnloadable>1</UserUnloadable>
+	<Version>1.0</Version>
+	<SupportedSoftwareVersionGreaterThan>28..</SupportedSoftwareVersionGreaterThan>
+</Addin>

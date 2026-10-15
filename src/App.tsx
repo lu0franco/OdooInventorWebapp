@@ -50,8 +50,13 @@ export default function App() {
         console.warn('Could not fetch server state:', err);
       });
 
-    // 2. Check if launched from Inventor with ?session=... or ?import=...
+    // 2. Check URL parameters (?view=..., ?session=..., ?import=...)
     const urlParams = new URLSearchParams(window.location.search);
+    const viewParam = urlParams.get('view');
+    if (viewParam && ['bom', 'iproperties', 'products', 'logs'].includes(viewParam)) {
+      setActiveView(viewParam as 'bom' | 'iproperties' | 'products' | 'logs');
+    }
+
     const sessionId = urlParams.get('session');
     if (sessionId) {
       fetch(`/api/inventor/session/${sessionId}`)
@@ -66,37 +71,124 @@ export default function App() {
         .catch(err => console.error('Error cargando sesión de Inventor:', err));
     }
 
-    const importParam = urlParams.get('import');
-    if (importParam) {
+    // Helper to safely decode Base64 containing UTF-8 characters (accents, ñ, etc.)
+    const safeDecodeBase64 = (str: string): string => {
       try {
-        let jsonStr = '';
-        try {
-          jsonStr = decodeURIComponent(atob(importParam));
-        } catch {
-          jsonStr = decodeURIComponent(importParam);
+        const cleanStr = decodeURIComponent(str).replace(/\s/g, '');
+        const binary = atob(cleanStr);
+        const bytes = new Uint8Array(binary.length);
+        for (let i = 0; i < binary.length; i++) {
+          bytes[i] = binary.charCodeAt(i);
         }
+        return new TextDecoder('utf-8').decode(bytes);
+      } catch {
+        try {
+          return decodeURIComponent(str);
+        } catch {
+          return str;
+        }
+      }
+    };
+
+    // Helper to apply imported CAD payload
+    const applyCadPayload = (payload: any, sourceName = 'Autodesk Inventor') => {
+      if (!payload) return;
+      const list = Array.isArray(payload) ? payload : (payload.bom || []);
+      const items: BomItem[] = list.map((item: any, idx: number) => ({
+        id: String(idx + 1),
+        item: String(idx + 1),
+        partNumber: item.partNumber || item.name || `ITEM-${idx + 1}`,
+        description: item.description || item.name || item.partNumber || '',
+        qty: Number(item.qty || item.quantity || 1),
+        uom: item.uom || 'Unidades',
+        material: item.material || 'Comercial',
+        odooId: item.odooId || `PROD-${Math.floor(100 + Math.random() * 900)}`,
+        status: 'pending'
+      }));
+
+      const newPart: CadPart = {
+        partNumber: payload.partNumber || 'ASM-INVENTOR',
+        name: payload.assemblyName || payload.name || payload.description || 'Ensamblaje Autodesk Inventor',
+        fileType: 'iam',
+        revision: payload.revision || 'Rev. 1',
+        author: payload.author || 'flucero (Inventor 2027)',
+        material: payload.material || 'Acero Inoxidable / Normalizados',
+        mass: Number(payload.mass) || 0,
+        volume: Number(payload.volume) || 0,
+        dimensions: payload.dimensions || 'N/A',
+        odooProductId: '1048',
+        syncStatus: 'pending',
+        lastSync: 'Recién cargado desde ' + sourceName,
+        iProperties: payload.iProperties || {
+          Title: payload.description || payload.assemblyName || 'Ensamblaje Inventor',
+          Subject: 'OT-26148',
+          Company: 'Deblasi Soluciones Industriales',
+          Manager: 'Ingeniería Mecánica',
+          CostCenter: 'CC-ING',
+          StandardCost: 0,
+          StockLocation: 'WH/Stock'
+        },
+        bom: items
+      };
+
+      setPart(newPart);
+      setActiveView('bom');
+      showNotification('success', `¡${items.length} componentes reales de '${newPart.partNumber}' cargados desde ${sourceName}!`);
+
+      // Persist to server session storage
+      fetch('/api/inventor/import-session', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      }).catch(e => console.warn('Sync server warning:', e));
+    };
+
+    // Check ?import= or #import= or #data=
+    const importParam = urlParams.get('import') || urlParams.get('data');
+    let hashData = '';
+    if (window.location.hash) {
+      const match = window.location.hash.match(/[#&](import|data)=([^&]+)/);
+      if (match) hashData = match[2];
+    }
+    const rawToImport = importParam || hashData;
+
+    if (rawToImport) {
+      try {
+        const jsonStr = safeDecodeBase64(rawToImport);
         const payload = JSON.parse(jsonStr);
-        if (payload && (payload.bom || payload.partNumber)) {
-          fetch('/api/inventor/import-session', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(payload)
-          })
-            .then(res => res.json())
-            .then(resData => {
-              if (resData.session) {
-                setPart(resData.session);
-                setActiveView('bom');
-                showNotification('success', `¡${resData.session.bom.length} componentes reales recibidos en vivo desde Inventor!`);
-                window.history.replaceState({}, document.title, window.location.pathname + '?view=bom');
-              }
-            })
-            .catch(err => console.error('Error procesando importación:', err));
+        if (payload && (payload.bom || payload.partNumber || Array.isArray(payload))) {
+          applyCadPayload(payload, 'URL de Autodesk Inventor');
+          window.history.replaceState({}, document.title, window.location.pathname);
         }
       } catch (e) {
         console.warn('Error leyendo parámetro import:', e);
       }
     }
+
+    // Global Paste Listener (Ctrl+V anywhere in window loads Inventor BOM immediately)
+    const handleGlobalPaste = (e: ClipboardEvent) => {
+      // Don't intercept if user is typing in an input or textarea
+      const target = e.target as HTMLElement;
+      if (target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable)) {
+        return;
+      }
+
+      const text = e.clipboardData?.getData('text');
+      if (!text || !text.trim()) return;
+
+      try {
+        const trimmed = text.trim();
+        if (trimmed.startsWith('{') || trimmed.startsWith('[')) {
+          const parsed = JSON.parse(trimmed);
+          if (parsed && (parsed.bom || parsed.partNumber || Array.isArray(parsed))) {
+            applyCadPayload(parsed, 'Portapapeles de Windows (Ctrl+V)');
+            e.preventDefault();
+            return;
+          }
+        }
+      } catch {}
+    };
+    window.addEventListener('paste', handleGlobalPaste);
 
     // 3. Listen for live WebView2 message from Inventor Add-In
     const handleBridgeMessage = (event: any) => {
@@ -105,20 +197,7 @@ export default function App() {
       try {
         const payload = typeof data === 'string' ? JSON.parse(data) : data;
         if (payload.partNumber || payload.bom || payload.assemblyName) {
-          // Received live assembly data from Inventor!
-          fetch('/api/inventor/import-session', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(payload)
-          })
-            .then(res => res.json())
-            .then(resData => {
-              if (resData.session) {
-                setPart(resData.session);
-                setActiveView('bom');
-                showNotification('success', `¡Ensamblaje '${resData.session.partNumber}' recibido desde Inventor!`);
-              }
-            });
+          applyCadPayload(payload, 'Conexión WebView2 Inventor');
         }
       } catch (e) {
         console.warn('Error parsing bridge message:', e);
@@ -153,6 +232,7 @@ export default function App() {
     window.addEventListener('focus', pollLatest);
 
     return () => {
+      window.removeEventListener('paste', handleGlobalPaste);
       window.removeEventListener('message', handleBridgeMessage);
       clearInterval(pollInterval);
       window.removeEventListener('focus', pollLatest);
