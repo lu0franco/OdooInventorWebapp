@@ -411,55 +411,129 @@ app.get('/api/inventor/session/:id', (req: Request, res: Response) => {
   return res.json({ success: true, session });
 });
 
+app.get('/api/inventor/latest', (_req: Request, res: Response) => {
+  return res.json({
+    success: true,
+    activePart: mockState.activePart,
+    session: mockState.activePart
+  });
+});
+
 // Mock / Sample CAD & ERP synchronized database
-const mockState = {
-  activePart: {
-    partNumber: 'INV-2027-ASM01',
-    name: 'Reductor Planetario Helicoidal v3',
-    fileType: 'iam',
-    revision: 'C.2',
-    author: 'Franco Lucero (Inventor 2027)',
-    material: 'Acero SAE 4140 templado / Aluminio 7075-T6',
-    mass: 14.85,
-    volume: 1890.4,
-    dimensions: '220mm x 180mm x 150mm',
-    odooProductId: '1048',
-    syncStatus: 'synced',
-    lastSync: '2026-10-14 09:15',
-    iProperties: {
-      Title: 'Reductor Planetario Helicoidal',
-      Subject: 'Mecanismo de Transmisión de Potencia',
-      Company: 'Deblasi Soluciones Industriales',
-      Manager: 'Ingeniería Mecánica',
-      CostCenter: 'CC-MEC-400',
-      StandardCost: 450.00,
-      StockLocation: 'WH/Stock/Mecanizados'
-    },
-    bom: [
-      { id: '1', item: '1', partNumber: 'CARC-AL7075-01', description: 'Carcasa Principal Bipartida', qty: 1, uom: 'Unidades', material: 'Aluminio 7075', odooId: 'PROD-401', status: 'synced' },
-      { id: '2', item: '2', partNumber: 'ENG-SOL-01', description: 'Engranaje Solar Helicoidal Z=18 M=2.5', qty: 1, uom: 'Unidades', material: 'SAE 4140', odooId: 'PROD-402', status: 'synced' },
-      { id: '3', item: '3', partNumber: 'ENG-PLAN-01', description: 'Satélites Planetarios Z=36 (Juego x3)', qty: 3, uom: 'Unidades', material: 'SAE 8620', odooId: 'PROD-403', status: 'synced' },
-      { id: '4', item: '4', partNumber: 'CORONA-INT-01', description: 'Corona Dentada Interior Z=90', qty: 1, uom: 'Unidades', material: 'SAE 4140', odooId: 'PROD-404', status: 'synced' },
-      { id: '5', item: '5', partNumber: 'ROD-6205-2RS', description: 'Rodamiento Rígido de Bolas SKF 6205-2RS', qty: 4, uom: 'Unidades', material: 'Normalizado', odooId: 'PROD-109', status: 'synced' },
-      { id: '6', item: '6', partNumber: 'RET-30-52-7', description: 'Retén de Doble Labio NBR 30x52x7', qty: 2, uom: 'Unidades', material: 'Polímero NBR', odooId: 'PROD-312', status: 'synced' },
-      { id: '7', item: '7', partNumber: 'BUL-M8X35-88', description: 'Bulón Allen Cilíndrico DIN 912 M8x35 Cl. 8.8', qty: 8, uom: 'Unidades', material: 'Acero Cincado', odooId: 'PROD-088', status: 'synced' }
-    ]
+const cintaTransferenciaFlamarique = {
+  partNumber: 'D-659.00',
+  name: 'CINTA DE TRANSFERENCIA 3 - OT-26148 - FLAMARIQUE',
+  fileType: 'iam' as const,
+  revision: 'Rev. 3',
+  author: 'flucero (Autodesk Inventor 2027)',
+  material: 'Acero Inoxidable AISI 304 / UHMW-PE / SAE 1045',
+  mass: 142.6,
+  volume: 18240.5,
+  dimensions: '3450mm x 480mm x 380mm',
+  odooProductId: '1048',
+  syncStatus: 'pending' as 'synced' | 'modified' | 'pending',
+  lastSync: 'Recién cargado desde Inventor',
+  iProperties: {
+    Title: 'CINTA DE TRANSFERENCIA 3',
+    Subject: 'OT-26148 - Línea de Envasado / Transporte Modular',
+    Company: 'Deblasi Soluciones Industriales',
+    Manager: 'Ingeniería Mecánica',
+    CostCenter: 'CC-ING-26148',
+    StandardCost: 3850.00,
+    StockLocation: 'WH/Stock/Montaje'
   },
-  odooProducts: [
-    { id: 1048, default_code: 'INV-2027-ASM01', name: 'Reductor Planetario Helicoidal v3', list_price: 1250.00, standard_price: 450.00, qty_available: 4, uom_id: 'Unidades', type: 'product', bom_count: 1 },
-    { id: 1049, default_code: 'CARC-AL7075-01', name: 'Carcasa Principal Bipartida', list_price: 210.00, standard_price: 95.00, qty_available: 12, uom_id: 'Unidades', type: 'product', bom_count: 0 },
-    { id: 1050, default_code: 'ENG-SOL-01', name: 'Engranaje Solar Helicoidal Z=18 M=2.5', list_price: 85.00, standard_price: 38.00, qty_available: 25, uom_id: 'Unidades', type: 'product', bom_count: 0 },
-    { id: 1051, default_code: 'ENG-PLAN-01', name: 'Satélites Planetarios Z=36', list_price: 65.00, standard_price: 28.50, qty_available: 60, uom_id: 'Unidades', type: 'product', bom_count: 0 },
-    { id: 1052, default_code: 'CORONA-INT-01', name: 'Corona Dentada Interior Z=90', list_price: 180.00, standard_price: 82.00, qty_available: 8, uom_id: 'Unidades', type: 'product', bom_count: 0 },
-    { id: 1053, default_code: 'ROD-6205-2RS', name: 'Rodamiento Rígido SKF 6205-2RS', list_price: 22.00, standard_price: 9.80, qty_available: 150, uom_id: 'Unidades', type: 'consu', bom_count: 0 },
-    { id: 1054, default_code: 'RET-30-52-7', name: 'Retén NBR 30x52x7', list_price: 6.50, standard_price: 2.10, qty_available: 95, uom_id: 'Unidades', type: 'consu', bom_count: 0 }
-  ],
-  syncLogs: [
-    { id: 1, timestamp: '2026-10-14 09:15:22', action: 'BOM_SYNC', target: 'mrp.bom #48', status: 'OK', details: 'BOM sincronizada para INV-2027-ASM01 con 7 líneas de componentes.' },
-    { id: 2, timestamp: '2026-10-14 09:12:05', action: 'IPROPERTIES_PUSH', target: 'product.template #1048', status: 'OK', details: 'Actualizados peso (14.85kg), volumen (1890.4cm3) y dimensiones desde Autodesk Inventor.' },
-    { id: 3, timestamp: '2026-10-14 09:05:40', action: 'JSONRPC_TEST', target: 'https://deblasi.adhoc.ar/odoo/jsonrpc', status: 'OK', details: 'Conexión verificada: Odoo Server common.version responded successfully.' }
+  bom: [
+    { id: '1', item: '1', partNumber: 'D-659.01.03', description: 'COSTILLA CAJÓN (Chapa plegada 2.5mm)', qty: 6, uom: 'Unidades', material: 'AISI 304', odooId: 'PROD-659-01', status: 'pending' as const },
+    { id: '2', item: '2', partNumber: 'ANCLAJE A MENSULA', description: 'Soporte y anclaje a ménsula estructural', qty: 4, uom: 'Unidades', material: 'AISI 304', odooId: 'PROD-659-02', status: 'pending' as const },
+    { id: '3', item: '3', partNumber: 'CAJON MANDO', description: 'Subensamblaje Cajón de Mando y Transmisión', qty: 1, uom: 'Unidades', material: 'AISI 304', odooId: 'PROD-659-03', status: 'pending' as const },
+    { id: '4', item: '4', partNumber: 'D-659.01.04', description: 'TRAVESANO COSTILLAS (Perfil conformación)', qty: 3, uom: 'Unidades', material: 'AISI 304', odooId: 'PROD-659-04', status: 'pending' as const },
+    { id: '5', item: '5', partNumber: 'MOTORREDUCTOR STM - UMI 50:1', description: 'Motorreductor a sinfín y corona STM UMI 50 i=50 0.75kW', qty: 1, uom: 'Unidades', material: 'Normalizado', odooId: 'PROD-MOT-50', status: 'pending' as const },
+    { id: '6', item: '6', partNumber: 'D-659.01.05', description: 'TAPA FRONTAL (Protección módulo motriz)', qty: 1, uom: 'Unidades', material: 'AISI 304', odooId: 'PROD-659-05', status: 'pending' as const },
+    { id: '7', item: '7', partNumber: 'D-659.01.06', description: 'EJE MANDO (Eje motriz maquinado Ø30mm)', qty: 1, uom: 'Unidades', material: 'SAE 1045', odooId: 'PROD-659-06', status: 'pending' as const },
+    { id: '8', item: '8', partNumber: 'COMERCIAL - ADAPTADOR 25-38', description: 'Adaptador comercial de acoplamiento 25-38mm', qty: 2, uom: 'Unidades', material: 'Acero SAE 1045', odooId: 'PROD-659-08', status: 'pending' as const },
+    { id: '9', item: '9', partNumber: 'RUEDA DENTADA Z 12 - PASO 25', description: 'Rueda dentada de tracción Z12 paso 25mm para malla modular', qty: 2, uom: 'Unidades', material: 'Poliamida PA6', odooId: 'PROD-659-09', status: 'pending' as const },
+    { id: '10', item: '10', partNumber: 'ISO 4017 - M10 x 25 - ISO - 25431', description: 'Tornillo hexagonal M10x25 ISO 4017 acero inox', qty: 12, uom: 'Unidades', material: 'Inox A2-70', odooId: 'PROD-TORN-M10', status: 'pending' as const },
+    { id: '11', item: '11', partNumber: 'PLATINA REDUCTOR', description: 'Platina soporte y fijación de reductor UMI 50', qty: 2, uom: 'Unidades', material: 'AISI 304', odooId: 'PROD-659-11', status: 'pending' as const },
+    { id: '12', item: '12', partNumber: 'PORTA RODAMIENTO', description: 'Soporte y caja porta rodamiento autoalineable UCFL 206', qty: 2, uom: 'Unidades', material: 'Fundición / Inox', odooId: 'PROD-ROD-206', status: 'pending' as const },
+    { id: '13', item: '13', partNumber: 'D-659.02.08', description: 'Ensamble EJE RETORNO (Conjunto tensor y retorno)', qty: 1, uom: 'Unidades', material: 'AISI 304 / SAE 1045', odooId: 'PROD-659-13', status: 'pending' as const },
+    { id: '14', item: '14', partNumber: 'D-659.01.02', description: 'BABETA MÓDULO MANDO (Guía de entrada / transición)', qty: 1, uom: 'Unidades', material: 'UHMW-PE Verde', odooId: 'PROD-659-14', status: 'pending' as const },
+    { id: '15', item: '15', partNumber: 'D-659.02.06', description: 'TENSOR RESORTE (Mecanismo de tensión automática)', qty: 2, uom: 'Unidades', material: 'Acero templado / AISI 304', odooId: 'PROD-659-15', status: 'pending' as const },
+    { id: '16', item: '16', partNumber: 'MALLA MODULAR PASO 25', description: 'Banda transportadora modular plástica paso 25mm Ancho=400mm', qty: 1, uom: 'Metros', material: 'Polipropileno FDA', odooId: 'PROD-MALLA-25', status: 'pending' as const },
+    { id: '17', item: '17', partNumber: 'D-659.02.01', description: 'EJE RETORNO TENSOR Ø25mm (Mecanizado libre)', qty: 1, uom: 'Unidades', material: 'SAE 1045', odooId: 'PROD-659-17', status: 'pending' as const },
+    { id: '18', item: '18', partNumber: 'D-659.02.02', description: 'RODILLO GUÍA RETORNO Ø80mm', qty: 2, uom: 'Unidades', material: 'Poliamida PA6', odooId: 'PROD-659-18', status: 'pending' as const },
+    { id: '19', item: '19', partNumber: 'ROD-6205-2RS', description: 'Rodamiento rígido de bolas SKF 6205-2RS', qty: 4, uom: 'Unidades', material: 'Normalizado', odooId: 'PROD-109', status: 'pending' as const },
+    { id: '20', item: '20', partNumber: 'PERFIL GUIA DESLIZANTE UHMW', description: 'Perfil guía de desgaste bajo malla modular L=3000mm', qty: 4, uom: 'Unidades', material: 'UHMW-PE Verde', odooId: 'PROD-GUIA-UHMW', status: 'pending' as const },
+    { id: '21', item: '21', partNumber: 'ISO 7089 - 10 - 200HV', description: 'Arandela plana DIN 125 M10 acero inoxidable', qty: 24, uom: 'Unidades', material: 'Inox A2', odooId: 'PROD-ARAN-M10', status: 'pending' as const },
+    { id: '22', item: '22', partNumber: 'PATA NIVELADORA ARTICULADA M16', description: 'Pie nivelador regulable M16 con rótula y base antideslizante', qty: 4, uom: 'Unidades', material: 'Poliamida / AISI 304', odooId: 'PROD-PATA-M16', status: 'pending' as const }
   ]
 };
+
+// Mock / Sample CAD & ERP synchronized database
+const mockState = {
+  activePart: { ...cintaTransferenciaFlamarique },
+  presets: [
+    { id: 'flamarique', label: 'D-659.00 - CINTA DE TRANSFERENCIA 3 - OT-26148 - FLAMARIQUE', data: cintaTransferenciaFlamarique },
+    { 
+      id: 'reductor', 
+      label: 'INV-2027-ASM01 - Reductor Planetario Helicoidal v3',
+      data: {
+        partNumber: 'INV-2027-ASM01',
+        name: 'Reductor Planetario Helicoidal v3',
+        fileType: 'iam' as const,
+        revision: 'C.2',
+        author: 'Franco Lucero (Inventor 2027)',
+        material: 'Acero SAE 4140 templado / Aluminio 7075-T6',
+        mass: 14.85,
+        volume: 1890.4,
+        dimensions: '220mm x 180mm x 150mm',
+        odooProductId: '1048',
+        syncStatus: 'synced' as const,
+        lastSync: '2026-10-14 09:15',
+        iProperties: {
+          Title: 'Reductor Planetario Helicoidal',
+          Subject: 'Mecanismo de Transmisión de Potencia',
+          Company: 'Deblasi Soluciones Industriales',
+          Manager: 'Ingeniería Mecánica',
+          CostCenter: 'CC-MEC-400',
+          StandardCost: 450.00,
+          StockLocation: 'WH/Stock/Mecanizados'
+        },
+        bom: [
+          { id: '1', item: '1', partNumber: 'CARC-AL7075-01', description: 'Carcasa Principal Bipartida', qty: 1, uom: 'Unidades', material: 'Aluminio 7075', odooId: 'PROD-401', status: 'synced' as const },
+          { id: '2', item: '2', partNumber: 'ENG-SOL-01', description: 'Engranaje Solar Helicoidal Z=18 M=2.5', qty: 1, uom: 'Unidades', material: 'SAE 4140', odooId: 'PROD-402', status: 'synced' as const },
+          { id: '3', item: '3', partNumber: 'ENG-PLAN-01', description: 'Satélites Planetarios Z=36 (Juego x3)', qty: 3, uom: 'Unidades', material: 'SAE 8620', odooId: 'PROD-403', status: 'synced' as const },
+          { id: '4', item: '4', partNumber: 'CORONA-INT-01', description: 'Corona Dentada Interior Z=90', qty: 1, uom: 'Unidades', material: 'SAE 4140', odooId: 'PROD-404', status: 'synced' as const },
+          { id: '5', item: '5', partNumber: 'ROD-6205-2RS', description: 'Rodamiento Rígido de Bolas SKF 6205-2RS', qty: 4, uom: 'Unidades', material: 'Normalizado', odooId: 'PROD-109', status: 'synced' as const },
+          { id: '6', item: '6', partNumber: 'RET-30-52-7', description: 'Retén de Doble Labio NBR 30x52x7', qty: 2, uom: 'Unidades', material: 'Polímero NBR', odooId: 'PROD-312', status: 'synced' as const },
+          { id: '7', item: '7', partNumber: 'BUL-M8X35-88', description: 'Bulón Allen Cilíndrico DIN 912 M8x35 Cl. 8.8', qty: 8, uom: 'Unidades', material: 'Acero Cincado', odooId: 'PROD-088', status: 'synced' as const }
+        ]
+      }
+    }
+  ],
+  odooProducts: [
+    { id: 1048, default_code: 'D-659.00', name: 'CINTA DE TRANSFERENCIA 3 - OT-26148 - FLAMARIQUE', list_price: 6500.00, standard_price: 3850.00, qty_available: 1, uom_id: 'Unidades', type: 'product', bom_count: 1 },
+    { id: 1049, default_code: 'D-659.01.03', name: 'COSTILLA CAJÓN (Chapa plegada 2.5mm)', list_price: 85.00, standard_price: 38.00, qty_available: 18, uom_id: 'Unidades', type: 'consu', bom_count: 0 },
+    { id: 1050, default_code: 'MOTORREDUCTOR STM - UMI 50:1', name: 'Motorreductor STM UMI 50 i=50 0.75kW', list_price: 680.00, standard_price: 490.00, qty_available: 3, uom_id: 'Unidades', type: 'product', bom_count: 0 },
+    { id: 1051, default_code: 'RUEDA DENTADA Z 12 - PASO 25', name: 'Rueda dentada de tracción Z12 paso 25mm', list_price: 45.00, standard_price: 22.00, qty_available: 8, uom_id: 'Unidades', type: 'product', bom_count: 0 },
+    { id: 1052, default_code: 'ISO 4017 - M10 x 25 - ISO - 25431', name: 'Tornillo hexagonal M10x25 ISO 4017 A2 Inox', list_price: 2.50, standard_price: 0.90, qty_available: 300, uom_id: 'Unidades', type: 'consu', bom_count: 0 },
+    { id: 1053, default_code: 'D-659.01.06', name: 'EJE MANDO (Mecanizado Ø30mm)', list_price: 185.00, standard_price: 92.00, qty_available: 2, uom_id: 'Unidades', type: 'consu', bom_count: 0 },
+    { id: 1054, default_code: 'D-659.02.08', name: 'Ensamble EJE RETORNO', list_price: 340.00, standard_price: 180.00, qty_available: 2, uom_id: 'Unidades', type: 'product', bom_count: 0 }
+  ],
+  syncLogs: [
+    { id: 1, timestamp: '2026-10-14 12:44:00', action: 'INVENTOR_BRIDGE', target: 'D-659.00 (.iam)', status: 'OK', details: 'Estructura de ensamble lista para transferencia: CINTA DE TRANSFERENCIA 3 - OT-26148 - FLAMARIQUE (16 líneas).' },
+    { id: 2, timestamp: '2026-10-14 12:40:05', action: 'JSONRPC_TEST', target: 'https://deblasi.adhoc.ar/odoo/jsonrpc', status: 'OK', details: 'Conexión verificada: Odoo Server common.version responded successfully.' }
+  ]
+};
+
+app.post('/api/inventor/load-preset', (req: Request, res: Response) => {
+  const { presetId } = req.body;
+  const found = mockState.presets.find(p => p.id === presetId);
+  if (found) {
+    mockState.activePart = JSON.parse(JSON.stringify(found.data));
+    return res.json({ success: true, part: mockState.activePart });
+  }
+  return res.status(404).json({ success: false, error: 'Preset no encontrado' });
+});
 
 app.get('/api/odoo/state', (_req: Request, res: Response) => {
   return res.json(mockState);
@@ -522,7 +596,7 @@ async function startServer() {
   if (process.env.NODE_ENV !== 'production') {
     const { createServer: createViteServer } = await import('vite');
     const vite = await createViteServer({
-      server: { middlewareMode: true, allowedHosts: true },
+      server: { middlewareMode: true, allowedHosts: true, hmr: false },
       appType: 'spa'
     });
     app.use(vite.middlewares);

@@ -21,13 +21,15 @@ import {
   FileSignature
 } from 'lucide-react';
 
+import { CadPart } from '../types';
+
 export type InventorEnvironment = 'Assembly' | 'Part' | 'Drawing' | 'ZeroDoc';
 
 interface RibbonHeaderProps {
   activeTab: string;
   setActiveTab: (tab: string) => void;
-  activeView: 'cad' | 'bom' | 'products' | 'logs';
-  setActiveView: (view: 'cad' | 'bom' | 'products' | 'logs') => void;
+  activeView: 'bom' | 'iproperties' | 'products' | 'logs';
+  setActiveView: (view: 'bom' | 'iproperties' | 'products' | 'logs') => void;
   environment: InventorEnvironment;
   setEnvironment: (env: InventorEnvironment) => void;
   onOpenTestForm: () => void;
@@ -37,6 +39,7 @@ interface RibbonHeaderProps {
   isSyncing: boolean;
   connectionState: 'idle' | 'connected' | 'error';
   odooUrl: string;
+  part?: CadPart | null;
 }
 
 export const RibbonHeader: React.FC<RibbonHeaderProps> = ({
@@ -52,7 +55,8 @@ export const RibbonHeader: React.FC<RibbonHeaderProps> = ({
   onOpenAddinInfo,
   isSyncing,
   connectionState,
-  odooUrl
+  odooUrl,
+  part
 }) => {
   const [tabLocation, setTabLocation] = useState<'TECNICA' | 'ODOO'>('TECNICA');
 
@@ -70,11 +74,15 @@ export const RibbonHeader: React.FC<RibbonHeaderProps> = ({
   const getDocBadge = () => {
     switch (environment) {
       case 'Assembly':
-        return { ext: '.iam', name: 'INV-2027-ASM01.iam — Reductor Planetario Helicoidal v3', color: 'bg-orange-500/20 text-orange-300' };
+        return { 
+          ext: '.iam', 
+          name: part ? `${part.partNumber}.iam — ${part.name}` : 'D-659.00 - CINTA DE TRANSFERENCIA 3 - OT-26148 - FLAMARIQUE.iam', 
+          color: 'bg-orange-500/20 text-orange-300' 
+        };
       case 'Part':
-        return { ext: '.ipt', name: 'ENG-SOL-01.ipt — Engranaje Solar Helicoidal Z=18', color: 'bg-blue-500/20 text-blue-300' };
+        return { ext: '.ipt', name: 'D-659.01.03.ipt — COSTILLA CAJÓN', color: 'bg-blue-500/20 text-blue-300' };
       case 'Drawing':
-        return { ext: '.idw', name: 'INV-2027-DWG01.idw — Plano de Fabricación y Conjunto', color: 'bg-emerald-500/20 text-emerald-300' };
+        return { ext: '.idw', name: 'D-659.00-DWG.idw — Plano de Montaje y Conjunto General', color: 'bg-emerald-500/20 text-emerald-300' };
       case 'ZeroDoc':
         return { ext: 'ZeroDoc', name: 'Sin documento activo en Autodesk Inventor', color: 'bg-slate-700 text-slate-300' };
     }
@@ -202,26 +210,26 @@ export const RibbonHeader: React.FC<RibbonHeaderProps> = ({
         {/* View Switcher pills */}
         <div className="flex items-center space-x-1 bg-slate-950 p-0.5 rounded border border-slate-800 mb-1">
           <button
-            onClick={() => setActiveView('cad')}
-            className={`px-2.5 py-1 text-xs font-medium rounded flex items-center space-x-1.5 transition ${
-              activeView === 'cad' 
-                ? 'bg-orange-600 text-white shadow-sm' 
-                : 'text-slate-400 hover:text-slate-200'
-            }`}
-          >
-            <Box className="w-3.5 h-3.5" />
-            <span>Modelo CAD & iProperties</span>
-          </button>
-          <button
             onClick={() => setActiveView('bom')}
-            className={`px-2.5 py-1 text-xs font-medium rounded flex items-center space-x-1.5 transition ${
+            className={`px-3 py-1 text-xs font-semibold rounded flex items-center space-x-1.5 transition ${
               activeView === 'bom' 
                 ? 'bg-orange-600 text-white shadow-sm' 
                 : 'text-slate-400 hover:text-slate-200'
             }`}
           >
             <Layers className="w-3.5 h-3.5" />
-            <span>Lista de Materiales (BOM)</span>
+            <span>Lista de Materiales (BOM / LDM)</span>
+          </button>
+          <button
+            onClick={() => setActiveView('iproperties')}
+            className={`px-3 py-1 text-xs font-semibold rounded flex items-center space-x-1.5 transition ${
+              activeView === 'iproperties' 
+                ? 'bg-orange-600 text-white shadow-sm' 
+                : 'text-slate-400 hover:text-slate-200'
+            }`}
+          >
+            <FileSignature className="w-3.5 h-3.5" />
+            <span>iProperties Ensamblaje</span>
           </button>
           <button
             onClick={() => setActiveView('products')}

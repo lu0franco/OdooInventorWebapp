@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { RibbonHeader, InventorEnvironment } from './components/RibbonHeader';
 import { OdooConnectionDialog } from './components/OdooConnectionDialog';
-import { CADModelViewer } from './components/CADModelViewer';
+import { AssemblyPropertiesView } from './components/AssemblyPropertiesView';
 import { BOMSyncManager } from './components/BOMSyncManager';
 import { OdooProductsView } from './components/OdooProductsView';
 import { SyncLogsView } from './components/SyncLogsView';
@@ -11,7 +11,7 @@ import { CheckCircle2, AlertCircle, Info } from 'lucide-react';
 
 export default function App() {
   const [activeTab, setActiveTab] = useState('ODOO');
-  const [activeView, setActiveView] = useState<'cad' | 'bom' | 'products' | 'logs'>('cad');
+  const [activeView, setActiveView] = useState<'bom' | 'iproperties' | 'products' | 'logs'>('bom');
   const [environment, setEnvironment] = useState<InventorEnvironment>('Assembly');
   const [isTestFormOpen, setIsTestFormOpen] = useState(false);
   const [isAddinInfoOpen, setIsAddinInfoOpen] = useState(false);
@@ -50,7 +50,7 @@ export default function App() {
         console.warn('Could not fetch server state:', err);
       });
 
-    // 2. Check if launched from Inventor with ?session=...
+    // 2. Check if launched from Inventor with ?session=... or ?import=...
     const urlParams = new URLSearchParams(window.location.search);
     const sessionId = urlParams.get('session');
     if (sessionId) {
@@ -64,6 +64,38 @@ export default function App() {
           }
         })
         .catch(err => console.error('Error cargando sesión de Inventor:', err));
+    }
+
+    const importParam = urlParams.get('import');
+    if (importParam) {
+      try {
+        let jsonStr = '';
+        try {
+          jsonStr = decodeURIComponent(atob(importParam));
+        } catch {
+          jsonStr = decodeURIComponent(importParam);
+        }
+        const payload = JSON.parse(jsonStr);
+        if (payload && (payload.bom || payload.partNumber)) {
+          fetch('/api/inventor/import-session', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload)
+          })
+            .then(res => res.json())
+            .then(resData => {
+              if (resData.session) {
+                setPart(resData.session);
+                setActiveView('bom');
+                showNotification('success', `¡${resData.session.bom.length} componentes reales recibidos en vivo desde Inventor!`);
+                window.history.replaceState({}, document.title, window.location.pathname + '?view=bom');
+              }
+            })
+            .catch(err => console.error('Error procesando importación:', err));
+        }
+      } catch (e) {
+        console.warn('Error leyendo parámetro import:', e);
+      }
     }
 
     // 3. Listen for live WebView2 message from Inventor Add-In
@@ -99,8 +131,31 @@ export default function App() {
       chromeWebview.addEventListener('message', handleBridgeMessage);
     }
 
+    // 4. Polling & Window Focus Auto-Refresh (Detects when Inventor pushes new LDM)
+    let lastKnownImportTime = '';
+    const pollLatest = async () => {
+      try {
+        const res = await fetch('/api/inventor/latest');
+        const data = await res.json();
+        if (data.success && data.activePart) {
+          const currentTimestamp = data.activePart.lastSync || data.activePart.importedAt || '';
+          if (lastKnownImportTime && currentTimestamp && currentTimestamp !== lastKnownImportTime) {
+            setPart(data.activePart);
+            setActiveView('bom');
+            showNotification('success', `¡${data.activePart.bom?.length || 0} componentes sincronizados en vivo desde Inventor!`);
+          }
+          lastKnownImportTime = currentTimestamp;
+        }
+      } catch {}
+    };
+
+    const pollInterval = setInterval(pollLatest, 2000);
+    window.addEventListener('focus', pollLatest);
+
     return () => {
       window.removeEventListener('message', handleBridgeMessage);
+      clearInterval(pollInterval);
+      window.removeEventListener('focus', pollLatest);
       if (chromeWebview?.removeEventListener) {
         chromeWebview.removeEventListener('message', handleBridgeMessage);
       }
@@ -259,26 +314,27 @@ export default function App() {
         isSyncing={isSyncing}
         connectionState={connectionState}
         odooUrl={odooUrl}
+        part={part}
       />
 
       {/* Main Viewport Content */}
       <main className="flex-1 flex overflow-hidden relative">
-        {activeView === 'cad' && part && (
-          <CADModelViewer
-            part={part}
-            onUpdatePart={setPart}
-            onPushProperties={handlePushProperties}
-            onSyncBom={() => setActiveView('bom')}
-            isPushing={isPushing}
-          />
-        )}
-
         {activeView === 'bom' && part && (
           <BOMSyncManager
             part={part}
             onUpdateBom={handleUpdateBom}
             onSyncBomToOdoo={handleSyncBomToOdoo}
             isSyncing={isSyncing}
+          />
+        )}
+
+        {activeView === 'iproperties' && part && (
+          <AssemblyPropertiesView
+            part={part}
+            onUpdatePart={setPart}
+            onPushProperties={handlePushProperties}
+            isPushing={isPushing}
+            onGoToBom={() => setActiveView('bom')}
           />
         )}
 
