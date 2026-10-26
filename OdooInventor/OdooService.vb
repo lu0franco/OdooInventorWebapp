@@ -235,44 +235,49 @@ Public Class OdooService
     End Function
 
     ' =========================================================
-    ' 5. CREAR SOLICITUD DE PRESUPUESTO / PEDIDO DE COMPRA (purchase.order)
+    ' 5. CREAR REQUISICIÓN DE COMPRA (purchase.requisition)
     ' =========================================================
-    Public Async Function CreatePurchaseOrderAsync(
+    Public Async Function CreatePurchaseRequisitionAsync(
         db As String,
         uid As Integer,
         apiKey As String,
-        partnerId As Integer,
-        Optional originText As String = "Autodesk Inventor - LDM") As Task(Of Integer)
+        vendorId As Integer,
+        Optional originText As String = "Autodesk Inventor - LDM",
+        Optional lineCommands As List(Of Object) = Nothing) As Task(Of Integer)
 
-        Dim orderValues As New Dictionary(Of String, Object) From {
-            {"partner_id", partnerId},
+        Dim requisitionValues As New Dictionary(Of String, Object) From {
             {"origin", originText}
         }
 
+        If vendorId > 0 Then
+            requisitionValues.Add("vendor_id", vendorId)
+        End If
+
+        If lineCommands IsNot Nothing AndAlso lineCommands.Count > 0 Then
+            requisitionValues.Add("line_ids", lineCommands)
+        End If
+
         Dim result As JsonElement = Await ExecuteKwAsync(
-            db, uid, apiKey, "purchase.order", "create", New Object() {orderValues})
+            db, uid, apiKey, "purchase.requisition", "create", New Object() {requisitionValues})
 
         Return result.GetInt32()
 
     End Function
 
     ' =========================================================
-    ' 6. AGREGAR LÍNEAS DE LA LDM A LA ORDEN DE COMPRA (purchase.order.line)
+    ' 6. IMPORTAR LA LDM COMO REQUISICIÓN DE COMPRA (purchase.requisition.line)
     ' =========================================================
-    Public Async Function ImportLdmToPurchaseOrderAsync(
+    Public Async Function ImportLdmToPurchaseRequisitionAsync(
         db As String,
         uid As Integer,
         apiKey As String,
-        partnerId As Integer,
+        vendorId As Integer,
         items As List(Of LdmItem),
-        Optional origin As String = "Autodesk Inventor - LDM") As Task(Of (OrderId As Integer, LinesCount As Integer))
+        Optional origin As String = "Autodesk Inventor - LDM") As Task(Of (RequisitionId As Integer, LinesCount As Integer))
 
-        ' 1. Crear la cabecera de compra en Odoo
-        Dim orderId As Integer = Await CreatePurchaseOrderAsync(db, uid, apiKey, partnerId, origin)
+        Dim lineCommands As New List(Of Object)
 
-        Dim count As Integer = 0
-
-        ' 2. Por cada fila del Excel / LDM, buscar o crear producto e insertar la línea
+        ' 1. Por cada fila del Excel / LDM, buscar o crear producto y armar la línea
         For Each item In items
 
             If String.IsNullOrWhiteSpace(item.PartNumber) Then Continue For
@@ -281,9 +286,7 @@ Public Class OdooService
                 db, uid, apiKey, item.PartNumber, item.Description)
 
             Dim lineValues As New Dictionary(Of String, Object) From {
-                {"order_id", orderId},
                 {"product_id", productId},
-                {"name", If(String.IsNullOrWhiteSpace(item.Description), item.PartNumber, item.Description)},
                 {"product_qty", item.Quantity}
             }
 
@@ -291,14 +294,15 @@ Public Class OdooService
                 lineValues.Add("price_unit", item.UnitPrice)
             End If
 
-            Await ExecuteKwAsync(
-                db, uid, apiKey, "purchase.order.line", "create", New Object() {lineValues})
-
-            count += 1
+            lineCommands.Add(New Object() {0, 0, lineValues})
 
         Next
 
-        Return (orderId, count)
+        ' 2. Crear la requisición en Odoo (queda en borrador) con todas sus líneas
+        Dim requisitionId As Integer = Await CreatePurchaseRequisitionAsync(
+            db, uid, apiKey, vendorId, origin, lineCommands)
+
+        Return (requisitionId, lineCommands.Count)
 
     End Function
 

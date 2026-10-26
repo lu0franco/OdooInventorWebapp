@@ -204,30 +204,30 @@ app.post('/api/odoo/authenticate', async (req: Request, res: Response) => {
   }
 });
 
-// Create Purchase Order (purchase.order & purchase.order.line) from BOM/LDM
-app.post('/api/odoo/create-purchase-order', async (req: Request, res: Response) => {
-  const { url, db, login, apiKey, partnerId = 1, items = [], origin = 'Autodesk Inventor LDM' } = req.body;
+// Create Purchase Requisition (purchase.requisition & purchase.requisition.line) from BOM/LDM
+app.post('/api/odoo/create-purchase-requisition', async (req: Request, res: Response) => {
+  const { url, db, login, apiKey, partnerId, items = [], origin = 'Autodesk Inventor LDM' } = req.body;
 
   if (!url || !db || !login || !apiKey) {
     // If credentials not provided, simulate successful creation for UI test mode
-    const fakePoNumber = `PO2027-${Math.floor(1000 + Math.random() * 9000)}`;
+    const fakeReqNumber = `PR2027-${Math.floor(1000 + Math.random() * 9000)}`;
     const newLog = {
       id: Date.now(),
       timestamp: new Date().toISOString().replace('T', ' ').substring(0, 19),
-      action: 'PURCHASE_ORDER',
-      target: `purchase.order [${fakePoNumber}]`,
+      action: 'PURCHASE_REQUISITION',
+      target: `purchase.requisition [${fakeReqNumber}]`,
       status: 'OK',
-      details: `Pedido de compra ${fakePoNumber} generado con ${items.length} líneas de la LDM.`
+      details: `Requisición de compra ${fakeReqNumber} generada con ${items.length} líneas de la LDM.`
     };
     mockState.syncLogs.unshift(newLog);
 
     return res.json({
       success: true,
       simulated: true,
-      orderId: Math.floor(100 + Math.random() * 900),
-      orderName: fakePoNumber,
+      requisitionId: Math.floor(100 + Math.random() * 900),
+      requisitionName: fakeReqNumber,
       linesCount: items.length,
-      message: `¡Pedido de compra ${fakePoNumber} creado exitosamente en Odoo con ${items.length} líneas de la LDM!`
+      message: `¡Requisición de compra ${fakeReqNumber} creada exitosamente en Odoo con ${items.length} líneas de la LDM!`
     });
   }
 
@@ -278,29 +278,17 @@ app.post('/api/odoo/create-purchase-order', async (req: Request, res: Response) 
       return d.result;
     };
 
-    // 2. Create purchase.order
-    const orderId = await executeKw('purchase.order', 'create', [{
-      partner_id: Number(partnerId) || 1,
-      origin: origin || 'Autodesk Inventor LDM'
-    }]);
-
-    // Read order name (e.g. PO00045)
-    const orderDetails = await executeKw('purchase.order', 'read', [[orderId]], { fields: ['name'] });
-    const orderName = orderDetails?.[0]?.name || `PO#${orderId}`;
-
-    // 3. For each LDM item, find or create product and add to purchase.order.line
-    let createdLines = 0;
+    // 2. For each LDM item, find or create product and build purchase.requisition.line commands
+    const lineCommands: any[] = [];
     for (const item of items) {
       if (!item.partNumber) continue;
 
-      // Search product.product
       const found = await executeKw('product.product', 'search_read', [
         [['default_code', '=', item.partNumber.trim()]]
       ], { fields: ['id', 'name'], limit: 1 });
 
       let productId = found?.[0]?.id;
       if (!productId) {
-        // Create product
         productId = await executeKw('product.product', 'create', [{
           default_code: item.partNumber.trim(),
           name: item.description || item.partNumber,
@@ -308,32 +296,42 @@ app.post('/api/odoo/create-purchase-order', async (req: Request, res: Response) 
         }]);
       }
 
-      // Add line to purchase.order.line
-      await executeKw('purchase.order.line', 'create', [{
-        order_id: orderId,
+      lineCommands.push([0, 0, {
         product_id: productId,
-        name: item.description || item.partNumber,
         product_qty: Number(item.qty || item.quantity || 1)
       }]);
-      createdLines++;
     }
+
+    // 3. Create purchase.requisition with its lines (stays in draft for review in Odoo Compras)
+    const requisitionValues: Record<string, any> = {
+      origin: origin || 'Autodesk Inventor LDM',
+      line_ids: lineCommands
+    };
+    if (Number(partnerId) > 0) requisitionValues.vendor_id = Number(partnerId);
+
+    const requisitionId = await executeKw('purchase.requisition', 'create', [requisitionValues]);
+
+    const reqDetails = await executeKw('purchase.requisition', 'read', [[requisitionId]], { fields: ['name'] });
+    const rawName = reqDetails?.[0]?.name;
+    const requisitionName = rawName && rawName !== 'New' ? rawName : `#${requisitionId}`;
+    const createdLines = lineCommands.length;
 
     const newLog = {
       id: Date.now(),
       timestamp: new Date().toISOString().replace('T', ' ').substring(0, 19),
-      action: 'PURCHASE_ORDER',
-      target: `purchase.order [${orderName}]`,
+      action: 'PURCHASE_REQUISITION',
+      target: `purchase.requisition [${requisitionName}]`,
       status: 'OK',
-      details: `Pedido de compra real ${orderName} creado en Odoo con ${createdLines} líneas.`
+      details: `Requisición de compra real ${requisitionName} creada en Odoo con ${createdLines} líneas.`
     };
     mockState.syncLogs.unshift(newLog);
 
     return res.json({
       success: true,
-      orderId,
-      orderName,
+      requisitionId,
+      requisitionName,
       linesCount: createdLines,
-      message: `¡Pedido de compra ${orderName} generado en Odoo con ${createdLines} líneas de la LDM!`
+      message: `¡Requisición de compra ${requisitionName} generada en Odoo con ${createdLines} líneas de la LDM!`
     });
 
   } catch (err: any) {
