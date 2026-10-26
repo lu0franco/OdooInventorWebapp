@@ -24,7 +24,10 @@ import {
   Database,
   Building,
   CheckCircle,
-  HelpCircle
+  HelpCircle,
+  Filter,
+  CheckSquare,
+  Square
 } from 'lucide-react';
 import * as XLSX from 'xlsx';
 import { CadPart, BomItem } from '../types';
@@ -57,7 +60,11 @@ export const BOMSyncManager: React.FC<BOMSyncManagerProps> = ({
   const [copiedUrl, setCopiedUrl] = useState(false);
   const [clipboardSuccessMsg, setClipboardSuccessMsg] = useState<string | null>(null);
 
-  // PO Modal State
+  // Filtro de COM en la tabla principal ('all' | 'com_only' | 'no_com')
+  const [comFilter, setComFilter] = useState<'all' | 'com_only' | 'no_com'>('all');
+
+  // PO Modal State (Filtro para subir solo ítems con COM al pedido de compra)
+  const [poOnlyCom, setPoOnlyCom] = useState(true);
   const [poDb, setPoDb] = useState(() => localStorage.getItem('odoo_auth_db') || 'odoo');
   const [poLogin, setPoLogin] = useState(() => localStorage.getItem('odoo_auth_login') || 'ing@deblasi.com.ar');
   const [poApiKey, setPoApiKey] = useState(() => localStorage.getItem('odoo_auth_pwd') || '');
@@ -71,13 +78,28 @@ export const BOMSyncManager: React.FC<BOMSyncManagerProps> = ({
   const [newQty, setNewQty] = useState('1');
   const [newMaterial, setNewMaterial] = useState('');
   const [newUom, setNewUom] = useState('Unidades');
+  const [newIsCom, setNewIsCom] = useState(false);
 
   // URL activa de la WebApp (toma dinámicamente el origen de tu navegador)
-  const publicWebAppUrl = typeof window !== 'undefined'
+  const publicWebAppUrl = typeof window !== 'undefined' && window.location.origin && window.location.origin !== 'null'
     ? window.location.origin
-    : 'https://ais-dev-42l3or3b2dxjrpc2vewuxp-636822672302.us-west2.run.app';
+    : 'http://localhost:3000';
 
   const fileInputRef = React.useRef<HTMLInputElement>(null);
+
+  // Helper para determinar si un ítem tiene la propiedad personalizada COM activa
+  const parseIsCom = (item: any): boolean => {
+    if (!item) return false;
+    if (item.isCom === true || item.com === true) return true;
+    const strVal = String(item.com || item.COM || item.isCom || '').trim().toLowerCase();
+    if (['true', 'si', 's', '1', 'x', 'yes'].includes(strVal)) return true;
+    const pNum = String(item.partNumber || item.name || '').toUpperCase();
+    const pMat = String(item.material || '').toUpperCase();
+    if (pNum.startsWith('COMERCIAL') || pNum.startsWith('ISO ') || pNum.startsWith('ROD-') || pMat.includes('NORMALIZADO')) {
+      return true;
+    }
+    return false;
+  };
 
   const handleDirectFileInput = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -100,7 +122,8 @@ export const BOMSyncManager: React.FC<BOMSyncManagerProps> = ({
               uom: item.uom || 'Unidades',
               material: item.material || 'Comercial',
               odooId: item.odooId || `PROD-${Math.floor(100 + Math.random() * 900)}`,
-              status: 'pending'
+              status: 'pending',
+              isCom: parseIsCom(item)
             }));
 
             if (onLoadPart) {
@@ -132,7 +155,8 @@ export const BOMSyncManager: React.FC<BOMSyncManagerProps> = ({
             } else {
               onUpdateBom(items);
             }
-            setClipboardSuccessMsg(`¡${items.length} componentes cargados desde ${file.name}!`);
+            const comsCount = items.filter(i => i.isCom).length;
+            setClipboardSuccessMsg(`¡${items.length} componentes cargados desde ${file.name} (${comsCount} marcados con COM)!`);
             setTimeout(() => setClipboardSuccessMsg(null), 5000);
           }
         } catch (err: any) {
@@ -155,7 +179,7 @@ export const BOMSyncManager: React.FC<BOMSyncManagerProps> = ({
           const rawHeaders = firstLineCols.map(h => h.replace(/"/g, '').trim().toLowerCase());
           const hasHeader = rawHeaders.some(h => 
             h.includes('part') || h.includes('pieza') || h.includes('item') || 
-            h.includes('desc') || h.includes('cant') || h.includes('material')
+            h.includes('desc') || h.includes('cant') || h.includes('material') || h.includes('com')
           );
 
           let pNumIdx = rawHeaders.findIndex(h => h.includes('partnumber') || h.includes('part number') || h.includes('pieza') || h.includes('código') || h.includes('codigo'));
@@ -170,6 +194,8 @@ export const BOMSyncManager: React.FC<BOMSyncManagerProps> = ({
           let matIdx = rawHeaders.findIndex(h => h.includes('material_plano') || h.includes('material plano') || h.includes('mat_plano'));
           if (matIdx === -1) matIdx = rawHeaders.findIndex(h => h.includes('material') || h.includes('mat'));
           if (matIdx === -1) matIdx = pNumIdx === 1 ? 5 : 3;
+
+          let comIdx = rawHeaders.findIndex(h => h === 'com' || h === 'comercial' || h.includes('compra'));
 
           const startRow = hasHeader ? 1 : 0;
           const items: BomItem[] = [];
@@ -186,6 +212,10 @@ export const BOMSyncManager: React.FC<BOMSyncManagerProps> = ({
             const qty = parseFloat(cols[qtyIdx] || '1') || 1;
             const material = (cols[matIdx] || cols[3] || 'Comercial / LDM').replace(/"/g, '').trim();
 
+            const isComVal = comIdx !== -1 
+              ? ['true', 'si', 's', '1', 'x', 'yes'].includes((cols[comIdx] || '').replace(/"/g, '').trim().toLowerCase())
+              : parseIsCom({ partNumber, material });
+
             items.push({
               id: String(items.length + 1),
               item: String(items.length + 1),
@@ -195,12 +225,14 @@ export const BOMSyncManager: React.FC<BOMSyncManagerProps> = ({
               uom: 'Unidades',
               material,
               odooId: `PROD-${Math.floor(100 + Math.random() * 900)}`,
-              status: 'pending'
+              status: 'pending',
+              isCom: isComVal
             });
           }
           if (items.length > 0) {
             onUpdateBom(items);
-            setClipboardSuccessMsg(`¡${items.length} componentes cargados desde ${file.name} (MATERIAL_PLANO asignado)!`);
+            const comsCount = items.filter(i => i.isCom).length;
+            setClipboardSuccessMsg(`¡${items.length} componentes cargados desde ${file.name} (${comsCount} marcados con COM)!`);
             setTimeout(() => setClipboardSuccessMsg(null), 5000);
           }
         } catch (err: any) {
@@ -234,7 +266,8 @@ export const BOMSyncManager: React.FC<BOMSyncManagerProps> = ({
             uom: item.uom || 'Unidades',
             material: item.material || 'Comercial',
             odooId: item.odooId || `PROD-${Math.floor(100 + Math.random() * 900)}`,
-            status: 'pending'
+            status: 'pending',
+            isCom: parseIsCom(item)
           }));
 
           if (onLoadPart) {
@@ -266,7 +299,8 @@ export const BOMSyncManager: React.FC<BOMSyncManagerProps> = ({
           } else {
             onUpdateBom(items);
           }
-          setClipboardSuccessMsg(`¡${items.length} componentes reales de Inventor recibidos con éxito!`);
+          const comsCount = items.filter(i => i.isCom).length;
+          setClipboardSuccessMsg(`¡${items.length} componentes recibidos con éxito (${comsCount} marcados con COM)!`);
           setTimeout(() => setClipboardSuccessMsg(null), 5000);
           return;
         }
@@ -294,7 +328,8 @@ export const BOMSyncManager: React.FC<BOMSyncManagerProps> = ({
           uom: 'Unidades',
           material,
           odooId: `PROD-${Math.floor(100 + Math.random() * 900)}`,
-          status: 'pending'
+          status: 'pending',
+          isCom: parseIsCom({ partNumber, material, com: cols[4] })
         });
       }
 
@@ -341,11 +376,62 @@ export const BOMSyncManager: React.FC<BOMSyncManagerProps> = ({
   };
 
   const bomList = part?.bom || [];
-  const filteredBom = bomList.filter(item => 
-    item.partNumber.toLowerCase().includes(searchTerm.toLowerCase()) ||
-    item.description.toLowerCase().includes(searchTerm.toLowerCase()) ||
-    item.material.toLowerCase().includes(searchTerm.toLowerCase())
-  );
+  const comCount = bomList.filter(item => item.isCom === true).length;
+  const nonComCount = bomList.length - comCount;
+
+  // Lista de artículos a enviar al Pedido de Compra (PO): solo con tick COM o todos
+  const itemsToUpload = poOnlyCom 
+    ? bomList.filter(item => item.isCom === true)
+    : bomList;
+
+  // Filtrado compuesto: Búsqueda de texto + Filtro COM
+  const filteredBom = bomList.filter(item => {
+    const matchesSearch = 
+      item.partNumber.toLowerCase().includes(searchTerm.toLowerCase()) ||
+      item.description.toLowerCase().includes(searchTerm.toLowerCase()) ||
+      item.material.toLowerCase().includes(searchTerm.toLowerCase());
+    
+    if (!matchesSearch) return false;
+    if (comFilter === 'com_only') return item.isCom === true;
+    if (comFilter === 'no_com') return !item.isCom;
+    return true;
+  });
+
+  // Toggle individual del tick COM para una fila
+  const handleToggleCom = (id: string, e?: React.MouseEvent) => {
+    if (e) e.stopPropagation();
+    const updated = (part?.bom || []).map(item =>
+      item.id === id ? { ...item, isCom: !item.isCom } : item
+    );
+    onUpdateBom(updated);
+  };
+
+  // Asignar COM a todos o limpiar todos
+  const handleBatchSetCom = (value: boolean) => {
+    const updated = (part?.bom || []).map(item => ({ ...item, isCom: value }));
+    onUpdateBom(updated);
+    setClipboardSuccessMsg(
+      value 
+        ? `¡Marcados los ${updated.length} componentes con el tick COM!`
+        : `¡Se quitó el tick COM de todos los componentes!`
+    );
+    setTimeout(() => setClipboardSuccessMsg(null), 4000);
+  };
+
+  // Asignar COM a componentes filtrados en la búsqueda
+  const handleSetFilteredCom = (value: boolean) => {
+    const visibleIds = new Set(filteredBom.map(i => i.id));
+    const updated = (part?.bom || []).map(item =>
+      visibleIds.has(item.id) ? { ...item, isCom: value } : item
+    );
+    onUpdateBom(updated);
+    setClipboardSuccessMsg(
+      value 
+        ? `¡Marcados los ${visibleIds.size} componentes filtrados con el tick COM!`
+        : `¡Se quitó el tick COM de los componentes filtrados!`
+    );
+    setTimeout(() => setClipboardSuccessMsg(null), 4000);
+  };
 
   const handleAddItem = (e: React.FormEvent) => {
     e.preventDefault();
@@ -360,7 +446,8 @@ export const BOMSyncManager: React.FC<BOMSyncManagerProps> = ({
       uom: newUom,
       material: newMaterial || 'No especificado',
       odooId: `PROD-${Math.floor(100 + Math.random() * 900)}`,
-      status: 'pending'
+      status: 'pending',
+      isCom: newIsCom
     };
 
     onUpdateBom([...(part?.bom || []), newItem]);
@@ -368,6 +455,7 @@ export const BOMSyncManager: React.FC<BOMSyncManagerProps> = ({
     setNewDesc('');
     setNewQty('1');
     setNewMaterial('');
+    setNewIsCom(false);
     setNewItemModal(false);
   };
 
@@ -377,9 +465,9 @@ export const BOMSyncManager: React.FC<BOMSyncManagerProps> = ({
 
   const exportCSV = () => {
     if (!part) return;
-    const headers = 'Item,PartNumber,Description,Quantity,UoM,Material,OdooID,Status\n';
+    const headers = 'Item,PartNumber,Description,Quantity,UoM,Material,COM,OdooID,Status\n';
     const rows = part.bom.map(i => 
-      `"${i.item}","${i.partNumber}","${i.description}",${i.qty},"${i.uom}","${i.material}","${i.odooId}","${i.status}"`
+      `"${i.item}","${i.partNumber}","${i.description}",${i.qty},"${i.uom}","${i.material}","${i.isCom ? 'SI' : 'NO'}","${i.odooId}","${i.status}"`
     ).join('\n');
     const blob = new Blob([headers + rows], { type: 'text/csv;charset=utf-8;' });
     const url = URL.createObjectURL(blob);
@@ -418,6 +506,9 @@ export const BOMSyncManager: React.FC<BOMSyncManagerProps> = ({
         const matPlanoCol = headers.findIndex(h => h.includes('material_plano') || h.includes('material plano') || h.includes('mat_plano'));
         const matCol = matPlanoCol !== -1 ? matPlanoCol : headers.findIndex(h => h.includes('mat') || h.includes('material'));
 
+        // Detectar columna COM
+        const comCol = headers.findIndex(h => h === 'com' || h === 'comercial' || h.includes('compra'));
+
         const newItems: BomItem[] = [];
         for (let i = 1; i < data.length; i++) {
           const row = data[i];
@@ -430,6 +521,10 @@ export const BOMSyncManager: React.FC<BOMSyncManagerProps> = ({
           const qty = Number(row[qtyCol !== -1 ? qtyCol : 3]) || 1;
           const material = String(row[matCol !== -1 ? matCol : 4] || 'Comercial / LDM').trim();
 
+          const isComVal = comCol !== -1 
+            ? ['true', 'si', 's', '1', 'x', 'yes'].includes(String(row[comCol] || '').trim().toLowerCase())
+            : parseIsCom({ partNumber, material });
+
           newItems.push({
             id: String(newItems.length + 1),
             item: String(newItems.length + 1),
@@ -439,14 +534,16 @@ export const BOMSyncManager: React.FC<BOMSyncManagerProps> = ({
             uom: 'Unidades',
             material,
             odooId: `PROD-${Math.floor(100 + Math.random() * 900)}`,
-            status: 'pending'
+            status: 'pending',
+            isCom: isComVal
           });
         }
 
         if (newItems.length > 0) {
           onUpdateBom(newItems);
           setIsImportModalOpen(false);
-          setClipboardSuccessMsg(`¡${newItems.length} componentes importados exitosamente desde Excel!`);
+          const comsCount = newItems.filter(i => i.isCom).length;
+          setClipboardSuccessMsg(`¡${newItems.length} componentes importados exitosamente desde Excel (${comsCount} con COM)!`);
           setTimeout(() => setClipboardSuccessMsg(null), 5000);
         }
       } catch (err: any) {
@@ -474,11 +571,13 @@ export const BOMSyncManager: React.FC<BOMSyncManagerProps> = ({
             uom: item.uom || 'Unidades',
             material: item.material || 'Comercial',
             odooId: item.odooId || `PROD-${Math.floor(100 + Math.random() * 900)}`,
-            status: 'pending'
+            status: 'pending',
+            isCom: parseIsCom(item)
           }));
           onUpdateBom(items);
           setIsImportModalOpen(false);
-          setClipboardSuccessMsg(`¡${items.length} componentes cargados desde JSON!`);
+          const comsCount = items.filter(i => i.isCom).length;
+          setClipboardSuccessMsg(`¡${items.length} componentes cargados desde JSON (${comsCount} con COM)!`);
           setTimeout(() => setClipboardSuccessMsg(null), 5000);
           return;
         }
@@ -492,7 +591,7 @@ export const BOMSyncManager: React.FC<BOMSyncManagerProps> = ({
       const rawHeaders = firstLineCols.map(h => h.replace(/"/g, '').trim().toLowerCase());
       const hasHeader = rawHeaders.some(h => 
         h.includes('part') || h.includes('pieza') || h.includes('item') || 
-        h.includes('desc') || h.includes('cant') || h.includes('material')
+        h.includes('desc') || h.includes('cant') || h.includes('material') || h.includes('com')
       );
 
       let pNumIdx = rawHeaders.findIndex(h => h.includes('partnumber') || h.includes('part number') || h.includes('pieza') || h.includes('código') || h.includes('codigo'));
@@ -507,6 +606,8 @@ export const BOMSyncManager: React.FC<BOMSyncManagerProps> = ({
       let matIdx = rawHeaders.findIndex(h => h.includes('material_plano') || h.includes('material plano') || h.includes('mat_plano'));
       if (matIdx === -1) matIdx = rawHeaders.findIndex(h => h.includes('material') || h.includes('mat'));
       if (matIdx === -1) matIdx = pNumIdx === 1 ? 5 : 3;
+
+      let comIdx = rawHeaders.findIndex(h => h === 'com' || h === 'comercial' || h.includes('compra'));
 
       const startRow = hasHeader ? 1 : 0;
       const items: BomItem[] = [];
@@ -523,6 +624,10 @@ export const BOMSyncManager: React.FC<BOMSyncManagerProps> = ({
         const qty = parseFloat(cols[qtyIdx] || '1') || 1;
         const material = (cols[matIdx] || cols[3] || 'Comercial / LDM').replace(/"/g, '').trim();
 
+        const isComVal = comIdx !== -1 
+          ? ['true', 'si', 's', '1', 'x', 'yes'].includes((cols[comIdx] || '').replace(/"/g, '').trim().toLowerCase())
+          : parseIsCom({ partNumber, material });
+
         items.push({
           id: String(items.length + 1),
           item: String(items.length + 1),
@@ -532,7 +637,8 @@ export const BOMSyncManager: React.FC<BOMSyncManagerProps> = ({
           uom: 'Unidades',
           material,
           odooId: `PROD-${Math.floor(100 + Math.random() * 900)}`,
-          status: 'pending'
+          status: 'pending',
+          isCom: isComVal
         });
       }
 
@@ -576,6 +682,19 @@ export const BOMSyncManager: React.FC<BOMSyncManagerProps> = ({
     setIsCreatingPo(true);
     setPoResult(null);
 
+    const itemsToUpload = poOnlyCom 
+      ? (part.bom || []).filter(b => b.isCom === true)
+      : (part.bom || []);
+
+    if (itemsToUpload.length === 0) {
+      setPoResult({
+        success: false,
+        message: 'No hay piezas con el tick COM activo para generar la orden de compra. Activá el tick COM en las filas deseadas o desmarcá la opción de subir solo COM.'
+      });
+      setIsCreatingPo(false);
+      return;
+    }
+
     if (poDb.trim()) localStorage.setItem('odoo_auth_db', poDb.trim());
     if (poLogin.trim()) localStorage.setItem('odoo_auth_login', poLogin.trim());
     if (poApiKey) localStorage.setItem('odoo_auth_pwd', poApiKey);
@@ -590,8 +709,10 @@ export const BOMSyncManager: React.FC<BOMSyncManagerProps> = ({
           login: poLogin.trim(),
           apiKey: poApiKey.trim(),
           partnerId: Number(poPartnerId) || 1,
-          origin: `Inventor LDM ${part.partNumber}`,
-          items: part.bom.map(b => ({
+          origin: poOnlyCom 
+            ? `Inventor LDM ${part.partNumber} [COM: ${itemsToUpload.length} ítems]`
+            : `Inventor LDM ${part.partNumber}`,
+          items: itemsToUpload.map(b => ({
             partNumber: b.partNumber,
             description: b.description,
             qty: b.qty
@@ -602,7 +723,7 @@ export const BOMSyncManager: React.FC<BOMSyncManagerProps> = ({
       if (data.success) {
         setPoResult({
           success: true,
-          message: data.message,
+          message: data.message + (poOnlyCom ? ` (${itemsToUpload.length} ítems con tick COM)` : ''),
           orderName: data.orderName
         });
       } else {
@@ -642,6 +763,7 @@ Sub Main()
     Dim descriptions As New System.Collections.Generic.Dictionary(Of String, String)()
     Dim materials As New System.Collections.Generic.Dictionary(Of String, String)()
     Dim uoms As New System.Collections.Generic.Dictionary(Of String, String)()
+    Dim isComs As New System.Collections.Generic.Dictionary(Of String, Boolean)()
 
     ' Función auxiliar para extraer MATERIAL_PLANO de Custom Properties
     Dim GetMatPlano = Function(d As Document) As String
@@ -665,7 +787,33 @@ Sub Main()
         Return "Acero / Normalizado"
     End Function
 
-    ' ESTRATEGIA 1: BOM Nativa de Inventor (PartsOnly / Structured)
+    ' Función auxiliar para extraer propiedad personalizada COM (True/False, SI/NO, 1/0, X, VERDADERO)
+    Dim GetIsCom = Function(d As Document, pNum As String, pMat As String) As Boolean
+        If d Is Nothing Then Return False
+        Try
+            Dim cProps As PropertySet = d.PropertySets.Item("Inventor User Defined Properties")
+            For Each p As [Property] In cProps
+                If String.Equals(p.Name, "COM", StringComparison.OrdinalIgnoreCase) OrElse _
+                   String.Equals(p.Name, "COMERCIAL", StringComparison.OrdinalIgnoreCase) Then
+                    If p.Value IsNot Nothing Then
+                        Dim v As String = p.Value.ToString().Trim().ToUpper()
+                        If v = "TRUE" OrElse v = "1" OrElse v = "SI" OrElse v = "S" OrElse v = "X" OrElse v = "YES" OrElse v = "Y" OrElse v = "VERDADERO" Then
+                            Return True
+                        ElseIf v = "FALSE" OrElse v = "0" OrElse v = "NO" OrElse v = "N" OrElse v = "FALSO" Then
+                            Return False
+                        End If
+                    End If
+                End If
+            Next
+        Catch
+        End Try
+        If pNum.ToUpper().StartsWith("COMERCIAL") OrElse pMat.ToUpper().Contains("NORMALIZADO") OrElse pNum.ToUpper().StartsWith("ISO ") OrElse pNum.ToUpper().StartsWith("ROD-") Then
+            Return True
+        End If
+        Return False
+    End Function
+
+    ' ESTRATEGIA 1: BOM Nativa de Inventor (Structured & PartsOnly)
     Try
         Dim oBOM As BOM = asmDef.BOM
         oBOM.PartsOnlyViewEnabled = True
@@ -674,100 +822,133 @@ Sub Main()
 
         Dim targetView As BOMView = Nothing
         For Each v As BOMView In oBOM.BOMViews
-            If v.ViewType = BOMViewTypeEnum.kPartsOnlyBOMViewType OrElse v.ViewType = BOMViewTypeEnum.kStructuredBOMViewType Then
+            If v.ViewType = BOMViewTypeEnum.kStructuredBOMViewType Then
                 targetView = v
                 Exit For
             End If
         Next
+        If targetView Is Nothing Then
+            For Each v As BOMView In oBOM.BOMViews
+                If v.ViewType = BOMViewTypeEnum.kPartsOnlyBOMViewType Then
+                    targetView = v
+                    Exit For
+                End If
+            Next
+        End If
+
+        Dim ProcessRow As Action(Of BOMRow) = Nothing
+        ProcessRow = Sub(row As BOMRow)
+            Try
+                Dim compDef As ComponentDefinition = row.ComponentDefinitions.Item(1)
+                Dim rDoc As Document = compDef.Document
+                Dim pNum As String = rDoc.DisplayName
+                Dim pDesc As String = rDoc.DisplayName
+                Dim pMat As String = "Normalizado"
+
+                Try
+                    Dim dp As PropertySet = rDoc.PropertySets.Item("Design Tracking Properties")
+                    pNum = dp.Item("Part Number").Value.ToString()
+                    pDesc = dp.Item("Description").Value.ToString()
+                Catch
+                End Try
+
+                ' Priorizar MATERIAL_PLANO y COM de Custom Properties
+                pMat = GetMatPlano(rDoc)
+                Dim isComVal As Boolean = GetIsCom(rDoc, pNum, pMat)
+
+                If String.IsNullOrWhiteSpace(pNum) Then pNum = rDoc.DisplayName
+                If String.IsNullOrWhiteSpace(pDesc) Then pDesc = pNum
+
+                pNum = pNum.Trim()
+                If counts.ContainsKey(pNum) Then
+                    counts(pNum) += row.ItemQuantity
+                Else
+                    counts(pNum) = row.ItemQuantity
+                    descriptions(pNum) = pDesc
+                    materials(pNum) = pMat
+                    uoms(pNum) = "Unidades"
+                    isComs(pNum) = isComVal
+                End If
+
+                If row.ChildRows IsNot Nothing AndAlso row.ChildRows.Count > 0 Then
+                    For Each childRow As BOMRow In row.ChildRows
+                        ProcessRow(childRow)
+                    Next
+                End If
+            Catch
+            End Try
+        End Sub
 
         If targetView IsNot Nothing Then
             For Each row As BOMRow In targetView.BOMRows
-                Try
-                    Dim compDef As ComponentDefinition = row.ComponentDefinitions.Item(1)
-                    Dim rDoc As Document = compDef.Document
-                    Dim pNum As String = rDoc.DisplayName
-                    Dim pDesc As String = rDoc.DisplayName
-                    Dim pMat As String = "Normalizado"
-
-                    Try
-                        Dim dp As PropertySet = rDoc.PropertySets.Item("Design Tracking Properties")
-                        pNum = dp.Item("Part Number").Value.ToString()
-                        pDesc = dp.Item("Description").Value.ToString()
-                    Catch
-                    End Try
-
-                    ' Priorizar MATERIAL_PLANO de Custom Properties
-                    pMat = GetMatPlano(rDoc)
-
-                    If String.IsNullOrWhiteSpace(pNum) Then pNum = rDoc.DisplayName
-                    If String.IsNullOrWhiteSpace(pDesc) Then pDesc = pNum
-
-                    pNum = pNum.Trim()
-                    If counts.ContainsKey(pNum) Then
-                        counts(pNum) += row.ItemQuantity
-                    Else
-                        counts(pNum) = row.ItemQuantity
-                        descriptions(pNum) = pDesc
-                        materials(pNum) = pMat
-                        uoms(pNum) = "Unidades"
-                    End If
-                Catch
-                End Try
+                ProcessRow(row)
             Next
         End If
     Catch
     End Try
 
-    ' ESTRATEGIA 2: Fallback AllLeafOccurrences si la BOM nativa estuvo vacía
+    ' ESTRATEGIA 2: Recorrido recursivo que garantiza extraer TODAS las piezas (.ipt) Y ensamblajes (.iam)
     If counts.Count = 0 Then
-        For Each occ As ComponentOccurrence In asmDef.Occurrences.AllLeafOccurrences
-            Try
-                If occ.Suppressed Then Continue For
-                If occ.BOMStructure = BOMStructureEnum.kReferenceBOMStructure Then Continue For
-
-                Dim pNum As String = ""
-                Dim pDesc As String = ""
-                Dim pMat As String = "Normalizado"
-
+        Dim TraverseOccs As Action(Of ComponentOccurrences) = Nothing
+        TraverseOccs = Sub(occs As ComponentOccurrences)
+            If occs Is Nothing Then Return
+            For Each occ As ComponentOccurrence In occs
                 Try
-                    Dim defDoc As Document = occ.Definition.Document
-                    If defDoc IsNot Nothing Then
-                        pNum = defDoc.DisplayName
-                        pDesc = defDoc.DisplayName
-                        Dim dp As PropertySet = defDoc.PropertySets.Item("Design Tracking Properties")
-                        Try
-                            pNum = dp.Item("Part Number").Value.ToString()
-                        Catch
-                        End Try
-                        Try
-                            pDesc = dp.Item("Description").Value.ToString()
-                        Catch
-                        End Try
+                    If occ.Suppressed Then Continue For
+                    If occ.BOMStructure = BOMStructureEnum.kReferenceBOMStructure Then Continue For
 
-                        ' Priorizar MATERIAL_PLANO de Custom Properties
-                        pMat = GetMatPlano(defDoc)
+                    Dim pNum As String = ""
+                    Dim pDesc As String = ""
+                    Dim pMat As String = "Normalizado"
+                    Dim isComVal As Boolean = False
+
+                    Try
+                        Dim defDoc As Document = occ.Definition.Document
+                        If defDoc IsNot Nothing Then
+                            pNum = defDoc.DisplayName
+                            pDesc = defDoc.DisplayName
+                            Dim dp As PropertySet = defDoc.PropertySets.Item("Design Tracking Properties")
+                            Try
+                                pNum = dp.Item("Part Number").Value.ToString()
+                            Catch
+                            End Try
+                            Try
+                                pDesc = dp.Item("Description").Value.ToString()
+                            Catch
+                            End Try
+                            pMat = GetMatPlano(defDoc)
+                            isComVal = GetIsCom(defDoc, pNum, pMat)
+                        End If
+                    Catch
+                    End Try
+
+                    If String.IsNullOrWhiteSpace(pNum) Then
+                        pNum = occ.Name
+                        If pNum.Contains(":") Then pNum = pNum.Substring(0, pNum.LastIndexOf(":"c))
+                    End If
+                    If String.IsNullOrWhiteSpace(pDesc) Then pDesc = pNum
+
+                    pNum = pNum.Trim()
+                    If counts.ContainsKey(pNum) Then
+                        counts(pNum) += 1
+                    Else
+                        counts(pNum) = 1
+                        descriptions(pNum) = pDesc
+                        materials(pNum) = pMat
+                        uoms(pNum) = "Unidades"
+                        isComs(pNum) = isComVal
+                    End If
+
+                    ' Si es un subensamblaje con componentes hijos, recorrer también sus partes
+                    If occ.SubOccurrences IsNot Nothing AndAlso occ.SubOccurrences.Count > 0 Then
+                        TraverseOccs(occ.SubOccurrences)
                     End If
                 Catch
                 End Try
+            Next
+        End Sub
 
-                If String.IsNullOrWhiteSpace(pNum) Then
-                    pNum = occ.Name
-                    If pNum.Contains(":") Then pNum = pNum.Substring(0, pNum.LastIndexOf(":"c))
-                End If
-                If String.IsNullOrWhiteSpace(pDesc) Then pDesc = pNum
-
-                pNum = pNum.Trim()
-                If counts.ContainsKey(pNum) Then
-                    counts(pNum) += 1
-                Else
-                    counts(pNum) = 1
-                    descriptions(pNum) = pDesc
-                    materials(pNum) = pMat
-                    uoms(pNum) = "Unidades"
-                End If
-            Catch
-            End Try
-        Next
+        TraverseOccs(asmDef.Occurrences)
     End If
 
     ' Armar items
@@ -781,6 +962,7 @@ Sub Main()
             .qty = kvp.Value,
             .uom = uoms(kvp.Key),
             .material = materials(kvp.Key),
+            .isCom = If(isComs.ContainsKey(kvp.Key), isComs(kvp.Key), False),
             .odooId = "PROD-" & (100 + idx).ToString(),
             .status = "pending"
         })
@@ -811,7 +993,8 @@ Sub Main()
     Catch
     End Try
 
-    ' 3. Enviar por HTTP a la WebApp y abrir navegador
+    ' 3. Intentar enviar por HTTP a la WebApp si está en localhost o red local
+    Dim httpOk As Boolean = False
     Try
         Using client As New System.Net.WebClient()
             client.Headers.Add("Content-Type", "application/json; charset=utf-8")
@@ -820,20 +1003,28 @@ Sub Main()
             Dim pos As Integer = resp.IndexOf("""sessionId"":""")
             If pos > 0 Then
                 Dim sId As String = resp.Substring(pos + 13, 20).Split(""""c)(0)
-                Process.Start(webAppUrl & "/?session=" & sId & "&view=bom")
-                Return
+                ' Si es localhost o IP local, abrir navegador; si es un entorno cloud autenticado, no abrir para evitar error 403
+                If webAppUrl.Contains("localhost") OrElse webAppUrl.Contains("127.0.0.1") Then
+                    Process.Start(webAppUrl & "/?session=" & sId & "&view=bom")
+                End If
+                httpOk = True
             End If
         End Using
-        Process.Start(webAppUrl & "/?view=bom")
     Catch ex As Exception
-        ' Si la red corporativa bloquea el puerto, abrimos la WebApp pública igualmente
-        Process.Start(webAppUrl & "/?view=bom")
     End Try
 
-    MessageBox.Show("¡" & bomItems.Count & " componentes extraídos exitosamente!" & vbCrLf & vbCrLf & _
-                    "1. Se abrió la WebApp en el navegador." & vbCrLf & _
-                    "2. En la WebApp, tocá 'Pegar LDM del Portapapeles' si no se cargó automáticamente.", _
-                    "OdooInventor iLogic", MessageBoxButtons.OK, MessageBoxIcon.Information)
+    ' 4. Mensaje claro con instrucciones
+    If httpOk Then
+        MessageBox.Show("¡" & bomItems.Count & " componentes transmitidos a la WebApp!" & vbCrLf & vbCrLf & _
+                        "• Copia de seguridad guardada en Portapapeles y C:\OdooInventor\bom_export.json", _
+                        "OdooInventor iLogic", MessageBoxButtons.OK, MessageBoxIcon.Information)
+    Else
+        MessageBox.Show("¡" & bomItems.Count & " piezas y ensamblajes extraídos con éxito!" & vbCrLf & vbCrLf & _
+                        "• Copiados al PORTAPAPELES de Windows automáticamente." & vbCrLf & _
+                        "• Guardados en C:\OdooInventor\bom_export.json" & vbCrLf & vbCrLf & _
+                        "En tu pestaña de OdooInventor, tocá 'Pegar LDM del Portapapeles' para ver todas las piezas y elegir cuáles subir al PO con el tick COM.", _
+                        "OdooInventor iLogic", MessageBoxButtons.OK, MessageBoxIcon.Information)
+    End If
 End Sub`;
 
   const copyToClipboard = (text: string, type: 'ilogic' | 'url') => {
@@ -1033,9 +1224,18 @@ End Sub`;
               {publicWebAppUrl}
             </div>
 
-            <p className="text-[11px] text-slate-400 mt-2">
-              ⚠️ <strong>Importante sobre errores 404:</strong> Si en Inventor antes se abría una dirección terminada en <code className="text-rose-400">ais-pre-...</code> o con <code className="text-rose-400">/?view=bom</code>, arrojaba "Page not found" porque la URL real de ejecución es la que ves arriba (o <code className="text-blue-300">http://localhost:3000</code> si ejecutás localmente).
-            </p>
+            <div className="mt-3 p-3 bg-amber-950/40 border border-amber-850/80 rounded-lg text-xs space-y-1.5">
+              <div className="flex items-center space-x-2 font-bold text-amber-300">
+                <AlertCircle className="w-4 h-4 shrink-0 text-amber-400" />
+                <span>¿Por qué tira error 403 en applet-auth-bridge al abrir un link?</span>
+              </div>
+              <p className="text-amber-200/90 leading-relaxed text-[11px]">
+                Ese error ocurre porque los enlaces directos de previsualización en la nube (<code>ais-dev-...run.app</code>) están protegidos por Google y requieren estar autenticado con la misma cuenta de Google en esa ventana. Además, si el link pertenecía a una sesión anterior de la applet, el puente de Google lo bloquea con <strong>403 Forbidden</strong>.
+              </p>
+              <p className="text-emerald-300 font-semibold text-[11px] pt-1">
+                👉 <strong>Solución directa:</strong> No necesitás abrir ningún link desde Inventor. El script ya copia automáticamente todas las piezas y ensamblajes al <strong>Portapapeles de Windows</strong> y a <code>C:\OdooInventor\bom_export.json</code>. En esta misma pantalla, solo hacé clic en el botón verde <strong>"📋 Pegar LDM del Portapapeles"</strong> (o <strong>"📂 Cargar archivo"</strong>) y se cargarán al instante con su propiedad COM.
+              </p>
+            </div>
           </div>
 
           {/* Demo Mode Button */}
@@ -1075,6 +1275,10 @@ End Sub`;
                     <span className="text-xs bg-emerald-950/80 text-emerald-300 px-2 py-0.5 rounded border border-emerald-800 flex items-center space-x-1">
                       <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse"></span>
                       <span>Enlace CAD Listo</span>
+                    </span>
+                    <span className="text-xs bg-emerald-500/15 text-emerald-300 font-mono font-bold px-2 py-0.5 rounded border border-emerald-500/30 flex items-center space-x-1" title="Piezas comerciales marcadas con la propiedad COM">
+                      <CheckSquare className="w-3 h-3 text-emerald-400" />
+                      <span>{comCount} con tick COM</span>
                     </span>
                   </div>
                   <h2 className="text-base font-bold text-slate-100 mt-1">
@@ -1137,20 +1341,82 @@ End Sub`;
           </div>
 
           {/* Secondary Tool Bar */}
-          <div className="p-3 bg-slate-900 border-b border-slate-800 flex items-center justify-between flex-wrap gap-2">
-            <div className="flex items-center space-x-3">
-              <div className="relative w-72">
+          <div className="p-3 bg-slate-900 border-b border-slate-800 flex items-center justify-between flex-wrap gap-2.5">
+            <div className="flex items-center space-x-3 flex-wrap gap-2">
+              <div className="relative w-64">
                 <Search className="w-3.5 h-3.5 text-slate-400 absolute left-2.5 top-1/2 -translate-y-1/2" />
                 <input
                   type="text"
                   value={searchTerm}
                   onChange={(e) => setSearchTerm(e.target.value)}
-                  placeholder="Buscar por código, descripción, material..."
+                  placeholder="Buscar código, descripción..."
                   className="w-full pl-8 pr-3 py-1 bg-slate-950 border border-slate-800 rounded text-xs text-slate-200 focus:outline-none focus:border-orange-500 font-sans"
                 />
               </div>
-              <div className="text-xs text-slate-400">
-                Mostrando <b className="text-slate-200 font-mono">{filteredBom.length}</b> de <b className="text-slate-200 font-mono">{part.bom.length}</b> componentes
+
+              {/* Filtros de Visualización: Todos vs Solo COM vs Sin COM */}
+              <div className="flex items-center space-x-1 bg-slate-950 p-0.5 rounded border border-slate-800 text-xs">
+                <button
+                  onClick={() => setComFilter('all')}
+                  className={`px-2.5 py-1 rounded text-xs transition ${
+                    comFilter === 'all' 
+                      ? 'bg-orange-600 text-white font-bold shadow-sm' 
+                      : 'text-slate-400 hover:text-white'
+                  }`}
+                  title="Ver todos los componentes del ensamble"
+                >
+                  Todos ({bomList.length})
+                </button>
+                <button
+                  onClick={() => setComFilter('com_only')}
+                  className={`px-2.5 py-1 rounded text-xs transition flex items-center space-x-1 ${
+                    comFilter === 'com_only' 
+                      ? 'bg-emerald-600 text-white font-bold shadow-sm' 
+                      : 'text-slate-400 hover:text-emerald-300'
+                  }`}
+                  title="Filtrar únicamente componentes con el tick COM activo (para Pedido de Compra)"
+                >
+                  <span className="w-2 h-2 rounded-full bg-emerald-400"></span>
+                  <span>Solo COM ({comCount})</span>
+                </button>
+                <button
+                  onClick={() => setComFilter('no_com')}
+                  className={`px-2.5 py-1 rounded text-xs transition ${
+                    comFilter === 'no_com' 
+                      ? 'bg-slate-700 text-slate-100 font-bold shadow-sm' 
+                      : 'text-slate-400 hover:text-white'
+                  }`}
+                  title="Ver componentes sin el tick COM (piezas a fabricar o ensamblar)"
+                >
+                  Sin COM ({nonComCount})
+                </button>
+              </div>
+
+              {/* Acciones Rápidas de COM */}
+              <div className="flex items-center space-x-1 border-l border-slate-800 pl-2">
+                <button
+                  onClick={() => handleBatchSetCom(true)}
+                  className="px-2 py-1 rounded bg-slate-800/90 hover:bg-slate-750 text-emerald-300 hover:text-emerald-200 text-[11px] font-mono border border-slate-700 transition"
+                  title="Marcar todos los componentes del ensamble con el tick COM"
+                >
+                  + Marcar todos COM
+                </button>
+                {filteredBom.length < bomList.length && (
+                  <button
+                    onClick={() => handleSetFilteredCom(true)}
+                    className="px-2 py-1 rounded bg-slate-800/90 hover:bg-slate-750 text-amber-300 hover:text-amber-200 text-[11px] font-mono border border-slate-700 transition"
+                    title="Marcar únicamente los componentes actualmente visibles con el tick COM"
+                  >
+                    + Marcar visibles COM ({filteredBom.length})
+                  </button>
+                )}
+                <button
+                  onClick={() => handleBatchSetCom(false)}
+                  className="px-2 py-1 rounded bg-slate-800/90 hover:bg-slate-750 text-slate-400 hover:text-slate-200 text-[11px] font-mono border border-slate-700 transition"
+                  title="Limpiar tick COM de todos los componentes"
+                >
+                  Limpiar COM
+                </button>
               </div>
             </div>
 
@@ -1161,13 +1427,13 @@ End Sub`;
                 className="px-2.5 py-1 bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs rounded border border-slate-700 flex items-center space-x-1.5 transition"
               >
                 <Plus className="w-3.5 h-3.5 text-orange-400" />
-                <span>Añadir Pieza Manual</span>
+                <span>Añadir Pieza</span>
               </button>
 
               <button
                 onClick={exportCSV}
                 className="px-2.5 py-1 bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs rounded border border-slate-700 flex items-center space-x-1.5 transition"
-                title="Descargar lista de materiales en formato CSV"
+                title="Descargar lista de materiales en formato CSV (incluye columna COM)"
               >
                 <FileSpreadsheet className="w-3.5 h-3.5 text-emerald-400" />
                 <span>Exportar CSV</span>
@@ -1175,11 +1441,14 @@ End Sub`;
 
               <button
                 onClick={() => setIsPoModalOpen(true)}
-                className="px-3 py-1 bg-emerald-800 hover:bg-emerald-700 text-white font-semibold text-xs rounded border border-emerald-600 flex items-center space-x-1.5 transition"
-                title="Generar orden de compra (purchase.order) para insumos y piezas comerciales"
+                className="px-3 py-1 bg-emerald-700 hover:bg-emerald-600 text-white font-bold text-xs rounded border border-emerald-500/50 flex items-center space-x-1.5 shadow transition"
+                title="Generar pedido de compra en Odoo (purchase.order). Filtra por componentes con tick en COM."
               >
                 <ShoppingCart className="w-3.5 h-3.5 text-emerald-200" />
                 <span>Crear Pedido de Compra (PO)</span>
+                <span className="px-1.5 py-0.2 rounded bg-emerald-950 text-emerald-200 font-mono text-[10px] border border-emerald-600">
+                  {comCount} COM
+                </span>
               </button>
 
               <button
@@ -1188,7 +1457,7 @@ End Sub`;
                 className="px-3.5 py-1 bg-orange-600 hover:bg-orange-500 text-white font-semibold text-xs rounded flex items-center space-x-1.5 shadow transition disabled:opacity-50"
               >
                 <RefreshCw className={`w-3.5 h-3.5 ${isSyncing ? 'animate-spin' : ''}`} />
-                <span>{isSyncing ? 'Sincronizando...' : 'Sincronizar Rápido a Odoo'}</span>
+                <span>{isSyncing ? 'Sincronizando...' : 'Sincronizar mrp.bom'}</span>
               </button>
             </div>
           </div>
@@ -1198,7 +1467,18 @@ End Sub`;
             <table className="w-full text-left text-xs border-collapse">
               <thead className="bg-slate-900 sticky top-0 text-slate-400 uppercase tracking-wider font-semibold border-b border-slate-800 select-none z-10 shadow-sm">
                 <tr>
-                  <th className="py-2.5 px-3 w-14 text-center">Ítem</th>
+                  <th className="py-2.5 px-3 w-12 text-center">Ítem</th>
+                  
+                  {/* COLUMNA COM: Propiedad personalizada para compras */}
+                  <th className="py-2.5 px-3 w-28 text-center" title="Propiedad personalizada COM (Comercial / Para Pedido de Compra PO)">
+                    <div className="flex items-center justify-center space-x-1">
+                      <span className="font-bold text-slate-200">COM</span>
+                      <span className="text-[9px] px-1 py-0.2 rounded bg-emerald-500/20 text-emerald-300 font-mono font-bold border border-emerald-500/30">
+                        PO
+                      </span>
+                    </div>
+                  </th>
+
                   <th className="py-2.5 px-3">Número de Pieza (CAD / Ref)</th>
                   <th className="py-2.5 px-3">Descripción Técnica del Componente</th>
                   <th className="py-2.5 px-3 w-20 text-right">Cant.</th>
@@ -1220,11 +1500,39 @@ End Sub`;
                 {filteredBom.map((item) => (
                   <tr 
                     key={item.id} 
-                    className="hover:bg-slate-900/90 transition-colors group"
+                    className={`transition-colors group ${item.isCom ? 'bg-emerald-950/15 hover:bg-emerald-950/30' : 'hover:bg-slate-900/90'}`}
                   >
                     <td className="py-2 px-3 text-center text-slate-500 font-bold">
                       {item.item}
                     </td>
+
+                    {/* Checkbox / Botón de tick COM interactivo */}
+                    <td className="py-2 px-3 text-center" onClick={(e) => e.stopPropagation()}>
+                      <button
+                        type="button"
+                        onClick={(e) => handleToggleCom(item.id, e)}
+                        className={`px-2.5 py-1 rounded text-[11px] font-bold font-mono inline-flex items-center space-x-1.5 transition-all shadow-sm ${
+                          item.isCom 
+                            ? 'bg-emerald-500 hover:bg-emerald-400 text-slate-950 ring-2 ring-emerald-400/40 font-black' 
+                            : 'bg-slate-800/90 hover:bg-emerald-950/70 hover:text-emerald-300 hover:border-emerald-600/60 text-slate-400 border border-slate-700'
+                        }`}
+                        title={
+                          item.isCom 
+                            ? "COM ACTIVO: Este componente se subirá a la Orden de Compra (PO). Hacé clic para quitar el tick COM." 
+                            : "SIN COM: Hacé clic para ponerle el tick COM y agregarlo a la Orden de Compra (PO)."
+                        }
+                      >
+                        <span className={`w-3.5 h-3.5 rounded flex items-center justify-center text-[10px] ${
+                          item.isCom 
+                            ? 'bg-slate-950 text-emerald-400 font-black' 
+                            : 'border border-slate-600 text-transparent group-hover:text-emerald-400'
+                        }`}>
+                          ✓
+                        </span>
+                        <span>{item.isCom ? 'COM' : '+ COM'}</span>
+                      </button>
+                    </td>
+
                     <td className="py-2 px-3 font-semibold text-orange-400 group-hover:text-orange-300">
                       {item.partNumber}
                     </td>
@@ -1768,25 +2076,172 @@ End Sub`;
       {/* Modal: Crear Orden de Compra (PO) en Odoo */}
       {isPoModalOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm p-4">
-          <div className="bg-slate-900 border border-slate-800 rounded-xl p-5 w-full max-w-lg shadow-2xl space-y-4">
-            <div className="flex items-center justify-between border-b border-slate-800 pb-3">
+          <div className="bg-slate-900 border border-slate-800 rounded-xl p-5 w-full max-w-xl shadow-2xl space-y-4 max-h-[90vh] flex flex-col">
+            <div className="flex items-center justify-between border-b border-slate-800 pb-3 shrink-0">
               <div className="flex items-center space-x-2 text-emerald-400">
-                <ShoppingCart className="w-5 h-5" />
-                <h3 className="text-sm font-bold text-slate-100">
-                  Generar Pedido de Compra en Odoo (purchase.order)
-                </h3>
+                <ShoppingCart className="w-5 h-5 shrink-0" />
+                <div>
+                  <h3 className="text-sm font-bold text-slate-100">
+                    Generar Pedido de Compra en Odoo (purchase.order)
+                  </h3>
+                  <p className="text-[11px] text-slate-400 font-normal">
+                    Filtro exclusivo para subir al PO solo las piezas y ensamblajes con tick en COM
+                  </p>
+                </div>
               </div>
               <button onClick={() => setIsPoModalOpen(false)} className="text-slate-400 hover:text-white">
                 <X className="w-4 h-4" />
               </button>
             </div>
 
-            <form onSubmit={handleCreatePurchaseOrder} className="space-y-3 text-xs">
-              <p className="text-slate-300">
-                Crea una orden de compra en Odoo con las <b>{part?.bom.length ?? 0} líneas de la LDM</b> de <code>{part?.partNumber ?? ''}</code>.
-              </p>
+            <form onSubmit={handleCreatePurchaseOrder} className="space-y-3.5 text-xs overflow-y-auto pr-1">
+              
+              {/* FILTRO PRINCIPAL: Solo COM vs Toda la LDM */}
+              <div className="p-3 bg-slate-950 rounded-lg border border-slate-800 space-y-2">
+                <div className="flex items-center justify-between">
+                  <span className="text-slate-200 font-bold flex items-center space-x-1.5">
+                    <Filter className="w-4 h-4 text-emerald-400" />
+                    <span>Filtro de Artículos para la Orden de Compra:</span>
+                  </span>
+                  <span className="text-[11px] font-mono px-2 py-0.5 rounded bg-emerald-500/10 text-emerald-300 border border-emerald-500/30">
+                    {itemsToUpload.length} seleccionados para PO
+                  </span>
+                </div>
 
-              <div className="grid grid-cols-2 gap-3">
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-xs">
+                  <button
+                    type="button"
+                    onClick={() => setPoOnlyCom(true)}
+                    className={`p-2.5 rounded-lg border text-left transition flex items-start space-x-2.5 ${
+                      poOnlyCom 
+                        ? 'bg-emerald-950/60 border-emerald-500/80 text-emerald-100 ring-1 ring-emerald-500/50' 
+                        : 'bg-slate-900 border-slate-800 text-slate-400 hover:text-slate-200 hover:border-slate-700'
+                    }`}
+                  >
+                    <span className={`w-4 h-4 mt-0.5 rounded flex items-center justify-center text-xs shrink-0 ${
+                      poOnlyCom ? 'bg-emerald-500 text-slate-950 font-black' : 'border border-slate-600'
+                    }`}>
+                      {poOnlyCom && '✓'}
+                    </span>
+                    <div>
+                      <div className="font-bold flex items-center space-x-1.5">
+                        <span>Solo con tick en COM</span>
+                        <span className="px-1.5 py-0.2 rounded bg-emerald-500/20 text-emerald-300 font-mono text-[10px]">
+                          {comCount} ítems
+                        </span>
+                      </div>
+                      <p className="text-[11px] text-slate-400 mt-0.5 leading-snug">
+                        Sube únicamente los artículos comerciales que tienen el tick en la propiedad COM.
+                      </p>
+                    </div>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => setPoOnlyCom(false)}
+                    className={`p-2.5 rounded-lg border text-left transition flex items-start space-x-2.5 ${
+                      !poOnlyCom 
+                        ? 'bg-orange-950/50 border-orange-500/80 text-orange-200 ring-1 ring-orange-500/50' 
+                        : 'bg-slate-900 border-slate-800 text-slate-400 hover:text-slate-200 hover:border-slate-700'
+                    }`}
+                  >
+                    <span className={`w-4 h-4 mt-0.5 rounded flex items-center justify-center text-xs shrink-0 ${
+                      !poOnlyCom ? 'bg-orange-500 text-slate-950 font-black' : 'border border-slate-600'
+                    }`}>
+                      {!poOnlyCom && '✓'}
+                    </span>
+                    <div>
+                      <div className="font-bold flex items-center space-x-1.5">
+                        <span>Subir toda la LDM</span>
+                        <span className="px-1.5 py-0.2 rounded bg-orange-500/20 text-orange-300 font-mono text-[10px]">
+                          {bomList.length} ítems
+                        </span>
+                      </div>
+                      <p className="text-[11px] text-slate-400 mt-0.5 leading-snug">
+                        Sube todas las piezas y ensamblajes de la lista, tengan o no el tick en COM.
+                      </p>
+                    </div>
+                  </button>
+                </div>
+              </div>
+
+              {/* Alerta si no hay ningún COM tickado */}
+              {poOnlyCom && comCount === 0 && (
+                <div className="p-3 bg-amber-950/40 border border-amber-800/70 rounded-lg text-amber-200 space-y-2">
+                  <div className="flex items-center space-x-2 font-bold text-xs">
+                    <AlertCircle className="w-4 h-4 text-amber-400 shrink-0" />
+                    <span>Ningún componente tiene el tick COM activo actualmente</span>
+                  </div>
+                  <p className="text-[11px] text-amber-300/85">
+                    Todas las piezas y subensamblajes están visibles en la webapp. Podés tickar las filas en la tabla principal o hacer clic para marcarlas todas:
+                  </p>
+                  <div className="flex items-center space-x-2 pt-0.5">
+                    <button
+                      type="button"
+                      onClick={() => handleBatchSetCom(true)}
+                      className="px-3 py-1 bg-emerald-600 hover:bg-emerald-500 text-white rounded font-bold text-xs flex items-center space-x-1.5 shadow transition"
+                    >
+                      <Check className="w-3.5 h-3.5" />
+                      <span>Marcar todas las piezas como COM</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setIsPoModalOpen(false)}
+                      className="px-3 py-1 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded text-xs transition"
+                    >
+                      <span>Volver a la tabla para tickar</span>
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              {/* Vista previa de las líneas que se enviarán a Odoo */}
+              <div className="space-y-1.5">
+                <div className="flex items-center justify-between text-xs font-semibold text-slate-300">
+                  <span className="flex items-center space-x-1">
+                    <span>Artículos a incluir en la Orden de Compra:</span>
+                    <span className="font-bold text-emerald-400">
+                      ({itemsToUpload.length} de {bomList.length})
+                    </span>
+                  </span>
+                  {itemsToUpload.length > 0 && (
+                    <span className="text-[11px] text-slate-400 font-mono">
+                      Total {itemsToUpload.reduce((acc, curr) => acc + curr.qty, 0)} unidades
+                    </span>
+                  )}
+                </div>
+
+                <div className="max-h-36 overflow-y-auto border border-slate-800 rounded-lg bg-slate-950 divide-y divide-slate-850 text-[11px]">
+                  {itemsToUpload.length === 0 ? (
+                    <div className="p-4 text-center text-slate-500 italic">
+                      Ningún componente seleccionado para subir al PO.
+                    </div>
+                  ) : (
+                    itemsToUpload.map((item) => (
+                      <div key={item.id} className="p-2 flex items-center justify-between hover:bg-slate-900/60 transition gap-2">
+                        <div className="flex items-center space-x-2 truncate min-w-0">
+                          <button
+                            type="button"
+                            onClick={(e) => handleToggleCom(item.id, e)}
+                            className="px-1.5 py-0.5 rounded text-[10px] font-mono font-bold bg-emerald-500/20 text-emerald-400 border border-emerald-500/40 hover:bg-rose-950 hover:text-rose-300 hover:border-rose-700 shrink-0"
+                            title="Hacé clic para destildar COM y quitar de este pedido"
+                          >
+                            ✓ COM
+                          </button>
+                          <span className="font-mono font-bold text-orange-400 shrink-0">{item.partNumber}</span>
+                          <span className="text-slate-300 truncate">{item.description}</span>
+                        </div>
+                        <div className="flex items-center space-x-2 shrink-0">
+                          <span className="font-bold text-slate-100 font-mono">{item.qty} {item.uom}</span>
+                        </div>
+                      </div>
+                    ))
+                  )}
+                </div>
+              </div>
+
+              {/* Credenciales Odoo */}
+              <div className="grid grid-cols-2 gap-3 pt-1 border-t border-slate-800">
                 <div>
                   <label className="text-slate-400 block mb-1">Base de Datos Odoo:</label>
                   <input
@@ -1832,19 +2287,11 @@ End Sub`;
                 </div>
               </div>
 
-              <div className="p-2.5 bg-slate-950/70 rounded border border-slate-800 text-[11px] text-slate-400 space-y-1.5">
-                <div>
-                  <span className="font-semibold text-slate-300">Modo de prueba:</span>
-                  <p>
-                    Si dejás los campos vacíos, se creará un pedido en <b>modo simulación</b>. Si ingresás tus credenciales, se enviará directo a tu Odoo en <code>deblasi.adhoc.ar</code>.
-                  </p>
-                </div>
-                <div className="pt-1 border-t border-slate-800/80 text-[10px] text-amber-300/90 flex items-start space-x-1.5">
-                  <span className="font-bold flex-shrink-0">💡 Permisos:</span>
-                  <span>
-                    Si tu usuario no tiene el rol de administración de productos (<em>Products Management</em>), la orden de compra se creará con líneas descriptivas directas para no bloquear la operación.
-                  </span>
-                </div>
+              <div className="p-2.5 bg-slate-950/70 rounded border border-slate-800 text-[11px] text-slate-400 space-y-1">
+                <span className="font-semibold text-slate-300">Modo de prueba:</span>
+                <p>
+                  Si dejás los campos vacíos, se creará un pedido en <b>modo simulación</b> con los ítems filtrados. Si ingresás tus credenciales, se enviará directo a tu Odoo en <code>deblasi.adhoc.ar</code>.
+                </p>
               </div>
 
               {poResult && (
@@ -1865,7 +2312,7 @@ End Sub`;
                 </div>
               )}
 
-              <div className="flex items-center justify-end space-x-2 pt-3 border-t border-slate-800">
+              <div className="flex items-center justify-end space-x-2 pt-3 border-t border-slate-800 shrink-0">
                 <button
                   type="button"
                   onClick={() => setIsPoModalOpen(false)}
@@ -1875,11 +2322,15 @@ End Sub`;
                 </button>
                 <button
                   type="submit"
-                  disabled={isCreatingPo}
+                  disabled={isCreatingPo || itemsToUpload.length === 0}
                   className="px-4 py-1.5 bg-emerald-600 hover:bg-emerald-500 active:bg-emerald-700 text-white font-semibold rounded shadow flex items-center space-x-1.5 disabled:opacity-50"
                 >
                   <Send className="w-3.5 h-3.5" />
-                  <span>{isCreatingPo ? 'Enviando a Odoo...' : 'Crear Pedido de Compra'}</span>
+                  <span>
+                    {isCreatingPo 
+                      ? 'Enviando a Odoo...' 
+                      : `Crear Pedido de Compra (${itemsToUpload.length} ítems)`}
+                  </span>
                 </button>
               </div>
 

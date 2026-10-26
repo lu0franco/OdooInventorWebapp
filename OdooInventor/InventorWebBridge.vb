@@ -172,9 +172,10 @@ Public Class InventorWebBridge
 
             Dim occurrencesCount As New Dictionary(Of String, Double)()
             Dim occurrencesMeta As New Dictionary(Of String, Tuple(Of String, String, String))() ' (Description, Material, UoM)
+            Dim occurrencesIsCom As New Dictionary(Of String, Boolean)() ' Propiedad personalizada COM
 
             ' =========================================================================
-            ' ESTRATEGIA 1: BOM Nativa de Inventor (BOMViews: PartsOnly y Structured)
+            ' ESTRATEGIA 1: BOM Nativa de Inventor (BOMViews: Structured y PartsOnly)
             ' Esta es la lista oficial que el usuario ve en la tabla de LDM de Inventor
             ' =========================================================================
             Try
@@ -191,7 +192,7 @@ Public Class InventorWebBridge
 
                 Dim targetBOMView As BOMView = Nothing
                 For Each view As BOMView In oBOM.BOMViews
-                    If view.ViewType = BOMViewTypeEnum.kPartsOnlyBOMViewType Then
+                    If view.ViewType = BOMViewTypeEnum.kStructuredBOMViewType Then
                         targetBOMView = view
                         Exit For
                     End If
@@ -199,7 +200,7 @@ Public Class InventorWebBridge
 
                 If targetBOMView Is Nothing Then
                     For Each view As BOMView In oBOM.BOMViews
-                        If view.ViewType = BOMViewTypeEnum.kStructuredBOMViewType Then
+                        If view.ViewType = BOMViewTypeEnum.kPartsOnlyBOMViewType Then
                             targetBOMView = view
                             Exit For
                         End If
@@ -207,76 +208,23 @@ Public Class InventorWebBridge
                 End If
 
                 If targetBOMView IsNot Nothing Then
-                    ProcessBOMRows(targetBOMView.BOMRows, occurrencesCount, occurrencesMeta)
+                    ProcessBOMRows(targetBOMView.BOMRows, occurrencesCount, occurrencesMeta, occurrencesIsCom)
                 End If
             Catch
             End Try
 
             ' =========================================================================
-            ' ESTRATEGIA 2: Si la BOM no devolvió filas, recorrer todas las ocurrencias hojas (AllLeafOccurrences)
+            ' ESTRATEGIA 2: Recorrido recursivo completo (incluye piezas .ipt y ensamblajes .iam)
             ' =========================================================================
             If occurrencesCount.Count = 0 Then
-                Try
-                    For Each occ As ComponentOccurrence In asmDoc.ComponentDefinition.Occurrences.AllLeafOccurrences
-                        Try
-                            If occ.Suppressed Then Continue For
-                            If occ.BOMStructure = BOMStructureEnum.kReferenceBOMStructure Then Continue For
-
-                            Dim pNum As String = ""
-                            Dim pDesc As String = ""
-                            Dim pMat As String = "Acero / Normalizado"
-
-                            Try
-                                Dim defDoc As Document = occ.Definition.Document
-                                If defDoc IsNot Nothing Then
-                                    pNum = defDoc.DisplayName
-                                    pDesc = defDoc.DisplayName
-                                    Dim dp As PropertySet = defDoc.PropertySets.Item("Design Tracking Properties")
-                                    Try
-                                        pNum = dp.Item("Part Number").Value.ToString()
-                                    Catch
-                                    End Try
-                                    Try
-                                        pDesc = dp.Item("Description").Value.ToString()
-                                    Catch
-                                    End Try
-                                    ' Priorizar MATERIAL_PLANO de Custom Properties (con fallback a Design Tracking)
-                                    pMat = GetMaterialPlano(defDoc)
-                                End If
-                            Catch
-                            End Try
-
-                            If String.IsNullOrWhiteSpace(pNum) Then
-                                pNum = occ.Name
-                                If pNum.Contains(":") Then pNum = pNum.Substring(0, pNum.LastIndexOf(":"c))
-                            End If
-                            If String.IsNullOrWhiteSpace(pDesc) Then pDesc = pNum
-
-                            pNum = pNum.Trim()
-                            If occurrencesCount.ContainsKey(pNum) Then
-                                occurrencesCount(pNum) += 1
-                            Else
-                                occurrencesCount(pNum) = 1
-                                occurrencesMeta(pNum) = New Tuple(Of String, String, String)(pDesc, pMat, "Unidades")
-                            End If
-                        Catch
-                        End Try
-                    Next
-                Catch
-                End Try
-            End If
-
-            ' =========================================================================
-            ' ESTRATEGIA 3: Recorrido recursivo de Occurrences directas
-            ' =========================================================================
-            If occurrencesCount.Count = 0 Then
-                TraverseOccurrencesRecursive(asmDoc.ComponentDefinition.Occurrences, occurrencesCount, occurrencesMeta)
+                TraverseOccurrencesRecursive(asmDoc.ComponentDefinition.Occurrences, occurrencesCount, occurrencesMeta, occurrencesIsCom)
             End If
 
             ' Armar la lista final ordenada
             Dim itemIdx As Integer = 1
             For Each kvp In occurrencesCount
                 Dim meta = occurrencesMeta(kvp.Key)
+                Dim isComVal As Boolean = If(occurrencesIsCom.ContainsKey(kvp.Key), occurrencesIsCom(kvp.Key), False)
                 Dim itemDict As New Dictionary(Of String, Object) From {
                     {"id", itemIdx.ToString()},
                     {"item", itemIdx.ToString()},
@@ -285,6 +233,7 @@ Public Class InventorWebBridge
                     {"qty", kvp.Value},
                     {"uom", meta.Item3},
                     {"material", meta.Item2},
+                    {"isCom", isComVal},
                     {"odooId", "PROD-" & (100 + itemIdx).ToString()},
                     {"status", "pending"}
                 }
@@ -406,12 +355,13 @@ Public Class InventorWebBridge
     End Function
 
     ''' <summary>
-    ''' Procesa filas de la BOM nativa de Inventor de forma recursiva.
+    ''' Procesa filas de la BOM nativa de Inventor de forma recursiva, incluyendo propiedad COM.
     ''' </summary>
     Private Shared Sub ProcessBOMRows(
         rows As BOMRowsEnumerator,
         counts As Dictionary(Of String, Double),
-        meta As Dictionary(Of String, Tuple(Of String, String, String)))
+        meta As Dictionary(Of String, Tuple(Of String, String, String)),
+        isComMap As Dictionary(Of String, Boolean))
 
         If rows Is Nothing Then Return
 
@@ -422,6 +372,7 @@ Public Class InventorWebBridge
                 Dim pMat As String = "Acero / Normalizado"
                 Dim uom As String = "Unidades"
                 Dim qty As Double = 1.0
+                Dim isComVal As Boolean = False
 
                 Try
                     qty = Convert.ToDouble(row.ItemQuantity)
@@ -451,12 +402,14 @@ Public Class InventorWebBridge
                     Catch
                     End Try
 
-                    ' Priorizar MATERIAL_PLANO de Custom Properties (con fallback a Design Tracking)
+                    ' Priorizar MATERIAL_PLANO y COM de Custom Properties
                     pMat = GetMaterialPlano(rowDoc)
+                    isComVal = GetIsCom(rowDoc, pNum, pMat)
                 ElseIf compDef IsNot Nothing Then
                     ' Para componentes virtuales u ocurrencias sin documento en disco
                     Try
                         pMat = GetMaterialPlanoFromPropertySets(compDef.PropertySets)
+                        isComVal = GetIsComFromPropertySets(compDef.PropertySets, pNum, pMat)
                     Catch
                     End Try
                 End If
@@ -477,12 +430,13 @@ Public Class InventorWebBridge
                     Else
                         counts(pNum) = qty
                         meta(pNum) = New Tuple(Of String, String, String)(pDesc, pMat, uom)
+                        isComMap(pNum) = isComVal
                     End If
                 End If
 
-                ' Recorrer sub-filas hijas si existen
+                ' Recorrer sub-filas hijas si existen (ensamblajes hijos)
                 If row.ChildRows IsNot Nothing AndAlso row.ChildRows.Count > 0 Then
-                    ProcessBOMRows(row.ChildRows, counts, meta)
+                    ProcessBOMRows(row.ChildRows, counts, meta, isComMap)
                 End If
             Catch
             End Try
@@ -490,12 +444,13 @@ Public Class InventorWebBridge
     End Sub
 
     ''' <summary>
-    ''' Recorrido recursivo alternativo de ocurrencias
+    ''' Recorrido recursivo que garantiza extraer TODAS las piezas (.ipt) Y ensamblajes (.iam)
     ''' </summary>
     Private Shared Sub TraverseOccurrencesRecursive(
         occs As ComponentOccurrences,
         counts As Dictionary(Of String, Double),
-        meta As Dictionary(Of String, Tuple(Of String, String, String)))
+        meta As Dictionary(Of String, Tuple(Of String, String, String)),
+        isComMap As Dictionary(Of String, Boolean))
 
         If occs Is Nothing Then Return
 
@@ -504,47 +459,51 @@ Public Class InventorWebBridge
                 If occ.Suppressed Then Continue For
                 If occ.BOMStructure = BOMStructureEnum.kReferenceBOMStructure Then Continue For
 
-                If occ.SubOccurrences IsNot Nothing AndAlso occ.SubOccurrences.Count > 0 Then
-                    TraverseOccurrencesRecursive(occ.SubOccurrences, counts, meta)
+                Dim pNum As String = ""
+                Dim pDesc As String = ""
+                Dim pMat As String = "Acero / Normalizado"
+                Dim isComVal As Boolean = False
+
+                Try
+                    Dim defDoc As Document = occ.Definition.Document
+                    If defDoc IsNot Nothing Then
+                        pNum = defDoc.DisplayName
+                        pDesc = defDoc.DisplayName
+                        Dim dp As PropertySet = defDoc.PropertySets.Item("Design Tracking Properties")
+                        Try
+                            pNum = dp.Item("Part Number").Value.ToString()
+                        Catch
+                        End Try
+                        Try
+                            pDesc = dp.Item("Description").Value.ToString()
+                        Catch
+                        End Try
+
+                        ' Priorizar MATERIAL_PLANO y COM de Custom Properties
+                        pMat = GetMaterialPlano(defDoc)
+                        isComVal = GetIsCom(defDoc, pNum, pMat)
+                    End If
+                Catch
+                End Try
+
+                If String.IsNullOrWhiteSpace(pNum) Then
+                    pNum = occ.Name
+                    If pNum.Contains(":") Then pNum = pNum.Substring(0, pNum.LastIndexOf(":"c))
+                End If
+                If String.IsNullOrWhiteSpace(pDesc) Then pDesc = pNum
+
+                pNum = pNum.Trim()
+                If counts.ContainsKey(pNum) Then
+                    counts(pNum) += 1
                 Else
-                    Dim pNum As String = ""
-                    Dim pDesc As String = ""
-                    Dim pMat As String = "Acero / Normalizado"
+                    counts(pNum) = 1
+                    meta(pNum) = New Tuple(Of String, String, String)(pDesc, pMat, "Unidades")
+                    isComMap(pNum) = isComVal
+                End If
 
-                    Try
-                        Dim defDoc As Document = occ.Definition.Document
-                        If defDoc IsNot Nothing Then
-                            pNum = defDoc.DisplayName
-                            pDesc = defDoc.DisplayName
-                            Dim dp As PropertySet = defDoc.PropertySets.Item("Design Tracking Properties")
-                            Try
-                                pNum = dp.Item("Part Number").Value.ToString()
-                            Catch
-                            End Try
-                            Try
-                                pDesc = dp.Item("Description").Value.ToString()
-                            Catch
-                            End Try
-
-                            ' Priorizar MATERIAL_PLANO de Custom Properties
-                            pMat = GetMaterialPlano(defDoc)
-                        End If
-                    Catch
-                    End Try
-
-                    If String.IsNullOrWhiteSpace(pNum) Then
-                        pNum = occ.Name
-                        If pNum.Contains(":") Then pNum = pNum.Substring(0, pNum.LastIndexOf(":"c))
-                    End If
-                    If String.IsNullOrWhiteSpace(pDesc) Then pDesc = pNum
-
-                    pNum = pNum.Trim()
-                    If counts.ContainsKey(pNum) Then
-                        counts(pNum) += 1
-                    Else
-                        counts(pNum) = 1
-                        meta(pNum) = New Tuple(Of String, String, String)(pDesc, pMat, "Unidades")
-                    End If
+                ' Si es un subensamblaje con sub-ocurrencias, recorrer también todos sus componentes hijos
+                If occ.SubOccurrences IsNot Nothing AndAlso occ.SubOccurrences.Count > 0 Then
+                    TraverseOccurrencesRecursive(occ.SubOccurrences, counts, meta, isComMap)
                 End If
             Catch
             End Try
@@ -630,6 +589,56 @@ Public Class InventorWebBridge
         End Try
 
         Return "Acero / Normalizado"
+    End Function
+
+    ''' <summary>
+    ''' Obtiene el valor booleano de la propiedad personalizada COM (True/False, SI/NO, 1/0, X, VERDADERO)
+    ''' </summary>
+    Public Shared Function GetIsCom(doc As Document, pNum As String, pMat As String) As Boolean
+        If doc Is Nothing Then Return False
+        Try
+            Return GetIsComFromPropertySets(doc.PropertySets, pNum, pMat)
+        Catch
+            Return False
+        End Try
+    End Function
+
+    ''' <summary>
+    ''' Inspecciona colecciones de iProperties buscando 'COM' en Custom Properties
+    ''' </summary>
+    Public Shared Function GetIsComFromPropertySets(pSets As PropertySets, pNum As String, pMat As String) As Boolean
+        If pSets Is Nothing Then Return False
+        Try
+            Dim customProps As PropertySet = pSets.Item("Inventor User Defined Properties")
+            If customProps IsNot Nothing Then
+                For Each prop As [Property] In customProps
+                    Dim pName As String = prop.Name
+                    If String.Equals(pName, "COM", StringComparison.OrdinalIgnoreCase) Then
+                        If prop.Value IsNot Nothing Then
+                            Dim v As String = prop.Value.ToString().Trim().ToUpper()
+                            If v = "✓" Then
+                                Return True
+                            ElseIf v = " " OrElse v = "" Then
+                                Return False
+                            End If
+                        End If
+                    End If
+                Next
+            End If
+        Catch
+        End Try
+
+        If Not String.IsNullOrWhiteSpace(pNum) Then
+            Dim pUpper = pNum.ToUpper()
+            If pUpper.StartsWith("COMERCIAL") OrElse pUpper.StartsWith("ISO ") OrElse pUpper.StartsWith("ROD-") Then
+                Return True
+            End If
+        End If
+        If Not String.IsNullOrWhiteSpace(pMat) AndAlso pMat.ToUpper().Contains("NORMALIZADO") Then
+            Return True
+        End If
+
+        Return False
     End Function
 
 End Class

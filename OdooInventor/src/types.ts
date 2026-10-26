@@ -8,6 +8,7 @@ export interface BomItem {
   material: string;
   odooId: string;
   status: 'synced' | 'pending' | 'conflict';
+  isCom?: boolean; // Propiedad personalizada COM (Comercial / Para Pedido de Compra PO)
 }
 
 export interface IProperties {

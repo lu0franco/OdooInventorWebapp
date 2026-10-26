@@ -94,17 +94,30 @@ export default function App() {
     const applyCadPayload = (payload: any, sourceName = 'Autodesk Inventor') => {
       if (!payload) return;
       const list = Array.isArray(payload) ? payload : (payload.bom || []);
-      const items: BomItem[] = list.map((item: any, idx: number) => ({
-        id: String(idx + 1),
-        item: String(idx + 1),
-        partNumber: item.partNumber || item.name || `ITEM-${idx + 1}`,
-        description: item.description || item.name || item.partNumber || '',
-        qty: Number(item.qty || item.quantity || 1),
-        uom: item.uom || 'Unidades',
-        material: item.material || 'Comercial',
-        odooId: item.odooId || `PROD-${Math.floor(100 + Math.random() * 900)}`,
-        status: 'pending'
-      }));
+      const items: BomItem[] = list.map((item: any, idx: number) => {
+        const isComValue = Boolean(
+          item.isCom === true ||
+          item.com === true ||
+          ['true', 'si', 's', '1', 'x', 'yes', 'y', 'verdadero'].includes(String(item.com || item.COM || item.isCom || '').toLowerCase()) ||
+          String(item.partNumber || '').toUpperCase().startsWith('COMERCIAL') ||
+          String(item.partNumber || '').toUpperCase().startsWith('ISO') ||
+          String(item.partNumber || '').toUpperCase().startsWith('ROD-') ||
+          String(item.material || '').toUpperCase().includes('NORMALIZADO')
+        );
+
+        return {
+          id: String(idx + 1),
+          item: String(idx + 1),
+          partNumber: item.partNumber || item.name || `ITEM-${idx + 1}`,
+          description: item.description || item.name || item.partNumber || '',
+          qty: Number(item.qty || item.quantity || 1),
+          uom: item.uom || 'Unidades',
+          material: item.material || 'Comercial',
+          odooId: item.odooId || `PROD-${Math.floor(100 + Math.random() * 900)}`,
+          status: 'pending',
+          isCom: isComValue
+        };
+      });
 
       const newPart: CadPart = {
         partNumber: payload.partNumber || 'ASM-INVENTOR',

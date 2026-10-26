@@ -376,17 +376,30 @@ app.post('/api/inventor/import-session', (req: Request, res: Response) => {
       StandardCost: 0,
       StockLocation: 'WH/Stock'
     },
-    bom: Array.isArray(bom) ? bom.map((item: any, idx: number) => ({
-      id: String(idx + 1),
-      item: String(idx + 1),
-      partNumber: item.partNumber || `ITEM-${idx + 1}`,
-      description: item.description || item.name || item.partNumber || '',
-      qty: Number(item.qty || item.quantity || 1),
-      uom: item.uom || 'Unidades',
-      material: item.material || 'Comercial',
-      odooId: item.odooId || `PROD-${Math.floor(100 + Math.random() * 900)}`,
-      status: 'pending' as const
-    })) : []
+    bom: Array.isArray(bom) ? bom.map((item: any, idx: number) => {
+      const isComVal = Boolean(
+        item.isCom === true ||
+        item.com === true ||
+        ['true', 'si', 's', '1', 'x', 'yes', 'y', 'verdadero'].includes(String(item.com || item.COM || item.isCom || '').toLowerCase()) ||
+        String(item.partNumber || '').toUpperCase().startsWith('COMERCIAL') ||
+        String(item.partNumber || '').toUpperCase().startsWith('ISO') ||
+        String(item.partNumber || '').toUpperCase().startsWith('ROD-') ||
+        String(item.material || '').toUpperCase().includes('NORMALIZADO')
+      );
+
+      return {
+        id: String(idx + 1),
+        item: String(idx + 1),
+        partNumber: item.partNumber || `ITEM-${idx + 1}`,
+        description: item.description || item.name || item.partNumber || '',
+        qty: Number(item.qty || item.quantity || 1),
+        uom: item.uom || 'Unidades',
+        material: item.material || 'Comercial',
+        odooId: item.odooId || `PROD-${Math.floor(100 + Math.random() * 900)}`,
+        status: 'pending' as const,
+        isCom: isComVal
+      };
+    }) : []
   };
 
   importedSessions.set(sessionId, sessionData);
@@ -453,28 +466,28 @@ const cintaTransferenciaFlamarique = {
     StockLocation: 'WH/Stock/Montaje'
   },
   bom: [
-    { id: '1', item: '1', partNumber: 'D-659.01.03', description: 'COSTILLA CAJÓN (Chapa plegada 2.5mm)', qty: 6, uom: 'Unidades', material: 'AISI 304', odooId: 'PROD-659-01', status: 'pending' as const },
-    { id: '2', item: '2', partNumber: 'ANCLAJE A MENSULA', description: 'Soporte y anclaje a ménsula estructural', qty: 4, uom: 'Unidades', material: 'AISI 304', odooId: 'PROD-659-02', status: 'pending' as const },
-    { id: '3', item: '3', partNumber: 'CAJON MANDO', description: 'Subensamblaje Cajón de Mando y Transmisión', qty: 1, uom: 'Unidades', material: 'AISI 304', odooId: 'PROD-659-03', status: 'pending' as const },
-    { id: '4', item: '4', partNumber: 'D-659.01.04', description: 'TRAVESANO COSTILLAS (Perfil conformación)', qty: 3, uom: 'Unidades', material: 'AISI 304', odooId: 'PROD-659-04', status: 'pending' as const },
-    { id: '5', item: '5', partNumber: 'MOTORREDUCTOR STM - UMI 50:1', description: 'Motorreductor a sinfín y corona STM UMI 50 i=50 0.75kW', qty: 1, uom: 'Unidades', material: 'Normalizado', odooId: 'PROD-MOT-50', status: 'pending' as const },
-    { id: '6', item: '6', partNumber: 'D-659.01.05', description: 'TAPA FRONTAL (Protección módulo motriz)', qty: 1, uom: 'Unidades', material: 'AISI 304', odooId: 'PROD-659-05', status: 'pending' as const },
-    { id: '7', item: '7', partNumber: 'D-659.01.06', description: 'EJE MANDO (Eje motriz maquinado Ø30mm)', qty: 1, uom: 'Unidades', material: 'SAE 1045', odooId: 'PROD-659-06', status: 'pending' as const },
-    { id: '8', item: '8', partNumber: 'COMERCIAL - ADAPTADOR 25-38', description: 'Adaptador comercial de acoplamiento 25-38mm', qty: 2, uom: 'Unidades', material: 'Acero SAE 1045', odooId: 'PROD-659-08', status: 'pending' as const },
-    { id: '9', item: '9', partNumber: 'RUEDA DENTADA Z 12 - PASO 25', description: 'Rueda dentada de tracción Z12 paso 25mm para malla modular', qty: 2, uom: 'Unidades', material: 'Poliamida PA6', odooId: 'PROD-659-09', status: 'pending' as const },
-    { id: '10', item: '10', partNumber: 'ISO 4017 - M10 x 25 - ISO - 25431', description: 'Tornillo hexagonal M10x25 ISO 4017 acero inox', qty: 12, uom: 'Unidades', material: 'Inox A2-70', odooId: 'PROD-TORN-M10', status: 'pending' as const },
-    { id: '11', item: '11', partNumber: 'PLATINA REDUCTOR', description: 'Platina soporte y fijación de reductor UMI 50', qty: 2, uom: 'Unidades', material: 'AISI 304', odooId: 'PROD-659-11', status: 'pending' as const },
-    { id: '12', item: '12', partNumber: 'PORTA RODAMIENTO', description: 'Soporte y caja porta rodamiento autoalineable UCFL 206', qty: 2, uom: 'Unidades', material: 'Fundición / Inox', odooId: 'PROD-ROD-206', status: 'pending' as const },
-    { id: '13', item: '13', partNumber: 'D-659.02.08', description: 'Ensamble EJE RETORNO (Conjunto tensor y retorno)', qty: 1, uom: 'Unidades', material: 'AISI 304 / SAE 1045', odooId: 'PROD-659-13', status: 'pending' as const },
-    { id: '14', item: '14', partNumber: 'D-659.01.02', description: 'BABETA MÓDULO MANDO (Guía de entrada / transición)', qty: 1, uom: 'Unidades', material: 'UHMW-PE Verde', odooId: 'PROD-659-14', status: 'pending' as const },
-    { id: '15', item: '15', partNumber: 'D-659.02.06', description: 'TENSOR RESORTE (Mecanismo de tensión automática)', qty: 2, uom: 'Unidades', material: 'Acero templado / AISI 304', odooId: 'PROD-659-15', status: 'pending' as const },
-    { id: '16', item: '16', partNumber: 'MALLA MODULAR PASO 25', description: 'Banda transportadora modular plástica paso 25mm Ancho=400mm', qty: 1, uom: 'Metros', material: 'Polipropileno FDA', odooId: 'PROD-MALLA-25', status: 'pending' as const },
-    { id: '17', item: '17', partNumber: 'D-659.02.01', description: 'EJE RETORNO TENSOR Ø25mm (Mecanizado libre)', qty: 1, uom: 'Unidades', material: 'SAE 1045', odooId: 'PROD-659-17', status: 'pending' as const },
-    { id: '18', item: '18', partNumber: 'D-659.02.02', description: 'RODILLO GUÍA RETORNO Ø80mm', qty: 2, uom: 'Unidades', material: 'Poliamida PA6', odooId: 'PROD-659-18', status: 'pending' as const },
-    { id: '19', item: '19', partNumber: 'ROD-6205-2RS', description: 'Rodamiento rígido de bolas SKF 6205-2RS', qty: 4, uom: 'Unidades', material: 'Normalizado', odooId: 'PROD-109', status: 'pending' as const },
-    { id: '20', item: '20', partNumber: 'PERFIL GUIA DESLIZANTE UHMW', description: 'Perfil guía de desgaste bajo malla modular L=3000mm', qty: 4, uom: 'Unidades', material: 'UHMW-PE Verde', odooId: 'PROD-GUIA-UHMW', status: 'pending' as const },
-    { id: '21', item: '21', partNumber: 'ISO 7089 - 10 - 200HV', description: 'Arandela plana DIN 125 M10 acero inoxidable', qty: 24, uom: 'Unidades', material: 'Inox A2', odooId: 'PROD-ARAN-M10', status: 'pending' as const },
-    { id: '22', item: '22', partNumber: 'PATA NIVELADORA ARTICULADA M16', description: 'Pie nivelador regulable M16 con rótula y base antideslizante', qty: 4, uom: 'Unidades', material: 'Poliamida / AISI 304', odooId: 'PROD-PATA-M16', status: 'pending' as const }
+    { id: '1', item: '1', partNumber: 'D-659.01.03', description: 'COSTILLA CAJÓN (Chapa plegada 2.5mm)', qty: 6, uom: 'Unidades', material: 'AISI 304', odooId: 'PROD-659-01', status: 'pending' as const, isCom: false },
+    { id: '2', item: '2', partNumber: 'ANCLAJE A MENSULA', description: 'Soporte y anclaje a ménsula estructural', qty: 4, uom: 'Unidades', material: 'AISI 304', odooId: 'PROD-659-02', status: 'pending' as const, isCom: false },
+    { id: '3', item: '3', partNumber: 'CAJON MANDO', description: 'Subensamblaje Cajón de Mando y Transmisión', qty: 1, uom: 'Unidades', material: 'AISI 304', odooId: 'PROD-659-03', status: 'pending' as const, isCom: false },
+    { id: '4', item: '4', partNumber: 'D-659.01.04', description: 'TRAVESANO COSTILLAS (Perfil conformación)', qty: 3, uom: 'Unidades', material: 'AISI 304', odooId: 'PROD-659-04', status: 'pending' as const, isCom: false },
+    { id: '5', item: '5', partNumber: 'MOTORREDUCTOR STM - UMI 50:1', description: 'Motorreductor a sinfín y corona STM UMI 50 i=50 0.75kW', qty: 1, uom: 'Unidades', material: 'Normalizado', odooId: 'PROD-MOT-50', status: 'pending' as const, isCom: true },
+    { id: '6', item: '6', partNumber: 'D-659.01.05', description: 'TAPA FRONTAL (Protección módulo motriz)', qty: 1, uom: 'Unidades', material: 'AISI 304', odooId: 'PROD-659-05', status: 'pending' as const, isCom: false },
+    { id: '7', item: '7', partNumber: 'D-659.01.06', description: 'EJE MANDO (Eje motriz maquinado Ø30mm)', qty: 1, uom: 'Unidades', material: 'SAE 1045', odooId: 'PROD-659-06', status: 'pending' as const, isCom: false },
+    { id: '8', item: '8', partNumber: 'COMERCIAL - ADAPTADOR 25-38', description: 'Adaptador comercial de acoplamiento 25-38mm', qty: 2, uom: 'Unidades', material: 'Acero SAE 1045', odooId: 'PROD-659-08', status: 'pending' as const, isCom: true },
+    { id: '9', item: '9', partNumber: 'RUEDA DENTADA Z 12 - PASO 25', description: 'Rueda dentada de tracción Z12 paso 25mm para malla modular', qty: 2, uom: 'Unidades', material: 'Poliamida PA6', odooId: 'PROD-659-09', status: 'pending' as const, isCom: true },
+    { id: '10', item: '10', partNumber: 'ISO 4017 - M10 x 25 - ISO - 25431', description: 'Tornillo hexagonal M10x25 ISO 4017 acero inox', qty: 12, uom: 'Unidades', material: 'Inox A2-70', odooId: 'PROD-TORN-M10', status: 'pending' as const, isCom: true },
+    { id: '11', item: '11', partNumber: 'PLATINA REDUCTOR', description: 'Platina soporte y fijación de reductor UMI 50', qty: 2, uom: 'Unidades', material: 'AISI 304', odooId: 'PROD-659-11', status: 'pending' as const, isCom: false },
+    { id: '12', item: '12', partNumber: 'PORTA RODAMIENTO', description: 'Soporte y caja porta rodamiento autoalineable UCFL 206', qty: 2, uom: 'Unidades', material: 'Fundición / Inox', odooId: 'PROD-ROD-206', status: 'pending' as const, isCom: true },
+    { id: '13', item: '13', partNumber: 'D-659.02.08', description: 'Ensamble EJE RETORNO (Conjunto tensor y retorno)', qty: 1, uom: 'Unidades', material: 'AISI 304 / SAE 1045', odooId: 'PROD-659-13', status: 'pending' as const, isCom: false },
+    { id: '14', item: '14', partNumber: 'D-659.01.02', description: 'BABETA MÓDULO MANDO (Guía de entrada / transición)', qty: 1, uom: 'Unidades', material: 'UHMW-PE Verde', odooId: 'PROD-659-14', status: 'pending' as const, isCom: false },
+    { id: '15', item: '15', partNumber: 'D-659.02.06', description: 'TENSOR RESORTE (Mecanismo de tensión automática)', qty: 2, uom: 'Unidades', material: 'Acero templado / AISI 304', odooId: 'PROD-659-15', status: 'pending' as const, isCom: true },
+    { id: '16', item: '16', partNumber: 'MALLA MODULAR PASO 25', description: 'Banda transportadora modular plástica paso 25mm Ancho=400mm', qty: 1, uom: 'Metros', material: 'Polipropileno FDA', odooId: 'PROD-MALLA-25', status: 'pending' as const, isCom: true },
+    { id: '17', item: '17', partNumber: 'D-659.02.01', description: 'EJE RETORNO TENSOR Ø25mm (Mecanizado libre)', qty: 1, uom: 'Unidades', material: 'SAE 1045', odooId: 'PROD-659-17', status: 'pending' as const, isCom: false },
+    { id: '18', item: '18', partNumber: 'D-659.02.02', description: 'RODILLO GUÍA RETORNO Ø80mm', qty: 2, uom: 'Unidades', material: 'Poliamida PA6', odooId: 'PROD-659-18', status: 'pending' as const, isCom: true },
+    { id: '19', item: '19', partNumber: 'ROD-6205-2RS', description: 'Rodamiento rígido de bolas SKF 6205-2RS', qty: 4, uom: 'Unidades', material: 'Normalizado', odooId: 'PROD-109', status: 'pending' as const, isCom: true },
+    { id: '20', item: '20', partNumber: 'PERFIL GUIA DESLIZANTE UHMW', description: 'Perfil guía de desgaste bajo malla modular L=3000mm', qty: 4, uom: 'Unidades', material: 'UHMW-PE Verde', odooId: 'PROD-GUIA-UHMW', status: 'pending' as const, isCom: true },
+    { id: '21', item: '21', partNumber: 'ISO 7089 - 10 - 200HV', description: 'Arandela plana DIN 125 M10 acero inoxidable', qty: 24, uom: 'Unidades', material: 'Inox A2', odooId: 'PROD-ARAN-M10', status: 'pending' as const, isCom: true },
+    { id: '22', item: '22', partNumber: 'PATA NIVELADORA ARTICULADA M16', description: 'Pie nivelador regulable M16 con rótula y base antideslizante', qty: 4, uom: 'Unidades', material: 'Poliamida / AISI 304', odooId: 'PROD-PATA-M16', status: 'pending' as const, isCom: true }
   ]
 };
 
