@@ -246,7 +246,7 @@ const searchTokens = (s: string) =>
   )).slice(0, 8);
 
 // Find existing purchasable products similar to an Inventor item (exact code first, then by shared words)
-async function findProductCandidates(executeKw: ExecuteKw, partNumber: string, text: string, limit = 8): Promise<ProductCandidate[]> {
+async function findProductCandidates(executeKw: ExecuteKw, partNumber: string, text: string, limit = 20): Promise<ProductCandidate[]> {
   const fields = ['id', 'default_code', 'display_name'];
   const byId = new Map<number, ProductCandidate>();
   const code = (partNumber || '').trim();
@@ -366,22 +366,29 @@ app.post('/api/odoo/create-purchase-requisition', async (req: Request, res: Resp
   try {
     const executeKw = await connectOdoo(url, db, login, apiKey);
 
-    // Use whichever request model is installed: purchase.requisition (Odoo Acuerdos de compra) or purchase.request (OCA Solicitudes de compra)
-    const installed = await executeKw('ir.model', 'search_read', [
-      [['model', 'in', ['purchase.requisition', 'purchase.request']]]
-    ], { fields: ['model'] });
-    const installedModels: string[] = (installed || []).map((m: any) => m.model);
-    const targetModel = ['purchase.requisition', 'purchase.request'].find(m => installedModels.includes(m));
+    // Use whichever request model is installed: purchase.requisition (Odoo Acuerdos de compra) or purchase.request (OCA Solicitudes de compra).
+    // Probed with fields_get on the line model because regular users can't read the models registry.
+    let targetModel: string | undefined;
+    let lineFields: Record<string, any> = {};
+    const probeErrors: string[] = [];
+    for (const model of ['purchase.requisition', 'purchase.request']) {
+      try {
+        lineFields = await executeKw(`${model}.line`, 'fields_get', [], { attributes: ['type'] });
+        targetModel = model;
+        break;
+      } catch (probeErr: any) {
+        probeErrors.push(`${model}: ${probeErr.message || probeErr}`);
+      }
+    }
     if (!targetModel) {
       return res.status(400).json({
         success: false,
-        error: 'Odoo no tiene instalado purchase_requisition (Acuerdos de compra) ni purchase_request (Solicitudes de compra).'
+        error: `No se pudo usar purchase.requisition ni purchase.request en Odoo. ${probeErrors.join(' | ')}`
       });
     }
     const isPurchaseRequest = targetModel === 'purchase.request';
     docLabel = isPurchaseRequest ? 'Solicitud de compra' : 'Requisición de compra';
 
-    const lineFields = await executeKw(`${targetModel}.line`, 'fields_get', [], { attributes: ['type'] });
     const descField = (isPurchaseRequest ? ['name'] : ['product_description_variants', 'name']).find(f => lineFields?.[f]);
 
     const uomByProduct = new Map<number, number>();

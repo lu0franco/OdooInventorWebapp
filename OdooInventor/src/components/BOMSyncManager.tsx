@@ -2165,7 +2165,7 @@ End Sub`;
       {/* Modal: Crear Requisición de Compra en Odoo */}
       {isPoModalOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm p-4">
-          <div className="bg-slate-900 border border-slate-800 rounded-xl p-5 w-full max-w-3xl shadow-2xl space-y-4 max-h-[90vh] flex flex-col">
+          <div className="bg-slate-900 border border-slate-800 rounded-xl p-5 w-full max-w-5xl shadow-2xl space-y-4 max-h-[90vh] flex flex-col">
             <div className="flex items-center justify-between border-b border-slate-800 pb-3 shrink-0">
               <div className="flex items-center space-x-2 text-emerald-400">
                 <ShoppingCart className="w-5 h-5 shrink-0" />
@@ -2300,7 +2300,7 @@ End Sub`;
                   )}
                 </div>
 
-                <div className="max-h-72 overflow-y-auto border border-slate-800 rounded-lg bg-slate-950 divide-y divide-slate-850 text-[11px]">
+                <div className="border border-slate-800 rounded-lg bg-slate-950 divide-y divide-slate-850 text-[11px]">
                   {itemsToUpload.length === 0 ? (
                     <div className="p-4 text-center text-slate-500 italic">
                       Ningún componente seleccionado para subir a la requisición.
@@ -2328,27 +2328,47 @@ End Sub`;
                             </div>
                           </div>
                           <div className="space-y-1">
-                            <select
-                              value={match?.selectedId ?? ''}
-                              onChange={(e) => updatePoMatch(item.id, { selectedId: e.target.value ? Number(e.target.value) : null })}
-                              className={`w-full px-2 py-1.5 bg-slate-900 border rounded text-xs ${
-                                match?.selectedId ? 'border-emerald-700 text-slate-100' : 'border-amber-700 text-amber-200'
-                              }`}
-                              title={match?.candidates.find(c => c.id === match.selectedId)?.display_name || "Producto existente en Odoo que se usará en esta línea"}
-                            >
-                              <option value="">
-                                {!match
-                                  ? 'Tocá "Buscar productos en Odoo"'
-                                  : match.candidates.length > 0
-                                    ? '— Elegí el producto de Odoo —'
-                                    : 'Sin coincidencias: probá otra búsqueda'}
-                              </option>
-                              {match?.candidates.map(c => (
-                                <option key={c.id} value={c.id}>
-                                  {c.display_name}{c.score >= 1000 ? ' (código exacto)' : ''}
-                                </option>
-                              ))}
-                            </select>
+                            {!match ? (
+                              <div className="px-2 py-1.5 border border-dashed border-amber-700 rounded text-[11px] text-amber-200">
+                                Tocá "Buscar productos en Odoo" para ver los productos parecidos
+                              </div>
+                            ) : match.candidates.length === 0 ? (
+                              <div className="px-2 py-1.5 border border-dashed border-amber-700 rounded text-[11px] text-amber-200">
+                                Sin coincidencias: probá otra búsqueda
+                              </div>
+                            ) : (
+                              <div
+                                className={`max-h-56 overflow-y-auto rounded border divide-y divide-slate-800 bg-slate-900 ${
+                                  match.selectedId ? 'border-emerald-700' : 'border-amber-700'
+                                }`}
+                                role="listbox"
+                                aria-label={`Productos de Odoo para ${item.partNumber}`}
+                              >
+                                {match.candidates.map(c => {
+                                  const isSelected = c.id === match.selectedId;
+                                  return (
+                                    <button
+                                      key={c.id}
+                                      type="button"
+                                      role="option"
+                                      aria-selected={isSelected}
+                                      onClick={() => updatePoMatch(item.id, { selectedId: isSelected ? null : c.id })}
+                                      className={`w-full text-left px-2 py-1.5 text-xs flex items-start gap-2 transition ${
+                                        isSelected ? 'bg-emerald-900/50 text-emerald-100' : 'text-slate-200 hover:bg-slate-800'
+                                      }`}
+                                    >
+                                      {isSelected
+                                        ? <CheckSquare className="w-3.5 h-3.5 mt-0.5 shrink-0 text-emerald-400" />
+                                        : <Square className="w-3.5 h-3.5 mt-0.5 shrink-0 text-slate-500" />}
+                                      <span className="break-words">
+                                        {c.display_name}
+                                        {c.score >= 1000 && <span className="ml-1 text-emerald-400 font-semibold">(código exacto)</span>}
+                                      </span>
+                                    </button>
+                                  );
+                                })}
+                              </div>
+                            )}
                             <div className="flex items-center gap-1.5">
                               <input
                                 type="text"
