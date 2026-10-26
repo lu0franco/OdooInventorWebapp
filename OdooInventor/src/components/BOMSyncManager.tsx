@@ -2165,13 +2165,13 @@ End Sub`;
       {/* Modal: Crear Requisición de Compra en Odoo */}
       {isPoModalOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm p-4">
-          <div className="bg-slate-900 border border-slate-800 rounded-xl p-5 w-full max-w-xl shadow-2xl space-y-4 max-h-[90vh] flex flex-col">
+          <div className="bg-slate-900 border border-slate-800 rounded-xl p-5 w-full max-w-3xl shadow-2xl space-y-4 max-h-[90vh] flex flex-col">
             <div className="flex items-center justify-between border-b border-slate-800 pb-3 shrink-0">
               <div className="flex items-center space-x-2 text-emerald-400">
                 <ShoppingCart className="w-5 h-5 shrink-0" />
                 <div>
                   <h3 className="text-sm font-bold text-slate-100">
-                    Generar Requisición de Compra en Odoo (purchase.requisition)
+                    Generar Requisición / Solicitud de Compra en Odoo
                   </h3>
                   <p className="text-[11px] text-slate-400 font-normal">
                     Filtro exclusivo para subir a la requisición solo las piezas y ensamblajes con tick en COM
@@ -2327,14 +2327,14 @@ End Sub`;
                               <span className="font-bold text-slate-100 font-mono">{item.qty} {item.uom}</span>
                             </div>
                           </div>
-                          <div className="flex items-center gap-1.5">
+                          <div className="space-y-1">
                             <select
                               value={match?.selectedId ?? ''}
                               onChange={(e) => updatePoMatch(item.id, { selectedId: e.target.value ? Number(e.target.value) : null })}
-                              className={`flex-1 min-w-0 px-2 py-1 bg-slate-900 border rounded text-[11px] ${
+                              className={`w-full px-2 py-1.5 bg-slate-900 border rounded text-xs ${
                                 match?.selectedId ? 'border-emerald-700 text-slate-100' : 'border-amber-700 text-amber-200'
                               }`}
-                              title="Producto existente en Odoo que se usará en esta línea"
+                              title={match?.candidates.find(c => c.id === match.selectedId)?.display_name || "Producto existente en Odoo que se usará en esta línea"}
                             >
                               <option value="">
                                 {!match
@@ -2349,28 +2349,30 @@ End Sub`;
                                 </option>
                               ))}
                             </select>
-                            <input
-                              type="text"
-                              placeholder="Otra búsqueda…"
-                              value={match?.query ?? ''}
-                              onChange={(e) => updatePoMatch(item.id, { query: e.target.value })}
-                              onKeyDown={(e) => {
-                                if (e.key === 'Enter') {
-                                  e.preventDefault();
-                                  handleMatchProducts([{ item, query: (match?.query || '').trim() || undefined }]);
-                                }
-                              }}
-                              className="w-28 px-2 py-1 bg-slate-900 border border-slate-700 rounded text-[11px] text-slate-100"
-                            />
-                            <button
-                              type="button"
-                              onClick={() => handleMatchProducts([{ item, query: (match?.query || '').trim() || undefined }])}
-                              disabled={isMatchingProducts}
-                              className="p-1 rounded border border-slate-700 text-slate-300 hover:text-white hover:bg-slate-800 disabled:opacity-50"
-                              title="Buscar productos de Odoo para esta pieza"
-                            >
-                              <Search className="w-3.5 h-3.5" />
-                            </button>
+                            <div className="flex items-center gap-1.5">
+                              <input
+                                type="text"
+                                placeholder="Otra búsqueda (ej.: motorreductor 1:20)…"
+                                value={match?.query ?? ''}
+                                onChange={(e) => updatePoMatch(item.id, { query: e.target.value })}
+                                onKeyDown={(e) => {
+                                  if (e.key === 'Enter') {
+                                    e.preventDefault();
+                                    handleMatchProducts([{ item, query: (match?.query || '').trim() || undefined }]);
+                                  }
+                                }}
+                                className="flex-1 min-w-0 px-2 py-1 bg-slate-900 border border-slate-700 rounded text-[11px] text-slate-100"
+                              />
+                              <button
+                                type="button"
+                                onClick={() => handleMatchProducts([{ item, query: (match?.query || '').trim() || undefined }])}
+                                disabled={isMatchingProducts}
+                                className="p-1 rounded border border-slate-700 text-slate-300 hover:text-white hover:bg-slate-800 disabled:opacity-50"
+                                title="Buscar productos de Odoo para esta pieza"
+                              >
+                                <Search className="w-3.5 h-3.5" />
+                              </button>
+                            </div>
                           </div>
                         </div>
                       );

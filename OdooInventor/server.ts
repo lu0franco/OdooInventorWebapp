@@ -324,7 +324,7 @@ const inventorLineDescription = (item: RequisitionItem) => {
   ].filter(Boolean).join(' | ');
 };
 
-// Create Purchase Requisition (purchase.requisition & purchase.requisition.line) from BOM/LDM
+// Create Purchase Requisition (purchase.requisition) or OCA Purchase Request (purchase.request) from BOM/LDM
 // Every item must reference an existing product (productId); products are never created here.
 app.post('/api/odoo/create-purchase-requisition', async (req: Request, res: Response) => {
   const { url, db, login, apiKey, partnerId, origin = 'Autodesk Inventor LDM' } = req.body;
@@ -362,52 +362,77 @@ app.post('/api/odoo/create-purchase-requisition', async (req: Request, res: Resp
     });
   }
 
+  let docLabel = 'Requisición de compra';
   try {
     const executeKw = await connectOdoo(url, db, login, apiKey);
 
-    // Custom line description field: product_description_variants (Odoo 14+) or name as fallback
-    const lineFields = await executeKw('purchase.requisition.line', 'fields_get', [], { attributes: ['type'] });
-    const descField = ['product_description_variants', 'name'].find(f => lineFields?.[f]);
+    // Use whichever request model is installed: purchase.requisition (Odoo Acuerdos de compra) or purchase.request (OCA Solicitudes de compra)
+    const installed = await executeKw('ir.model', 'search_read', [
+      [['model', 'in', ['purchase.requisition', 'purchase.request']]]
+    ], { fields: ['model'] });
+    const installedModels: string[] = (installed || []).map((m: any) => m.model);
+    const targetModel = ['purchase.requisition', 'purchase.request'].find(m => installedModels.includes(m));
+    if (!targetModel) {
+      return res.status(400).json({
+        success: false,
+        error: 'Odoo no tiene instalado purchase_requisition (Acuerdos de compra) ni purchase_request (Solicitudes de compra).'
+      });
+    }
+    const isPurchaseRequest = targetModel === 'purchase.request';
+    docLabel = isPurchaseRequest ? 'Solicitud de compra' : 'Requisición de compra';
+
+    const lineFields = await executeKw(`${targetModel}.line`, 'fields_get', [], { attributes: ['type'] });
+    const descField = (isPurchaseRequest ? ['name'] : ['product_description_variants', 'name']).find(f => lineFields?.[f]);
+
+    const uomByProduct = new Map<number, number>();
+    if (lineFields?.product_uom_id) {
+      const productIds = Array.from(new Set(items.map(i => Number(i.productId))));
+      const products = await executeKw('product.product', 'read', [productIds], { fields: ['uom_id'] });
+      for (const p of products || []) if (p.uom_id) uomByProduct.set(p.id, p.uom_id[0]);
+    }
 
     const lineCommands = items.map(item => {
+      const productId = Number(item.productId);
       const line: Record<string, any> = {
-        product_id: Number(item.productId),
+        product_id: productId,
         product_qty: Number(item.qty || item.quantity || 1)
       };
       if (descField) line[descField] = inventorLineDescription(item);
+      if (uomByProduct.has(productId)) line.product_uom_id = uomByProduct.get(productId);
       return [0, 0, line];
     });
 
-    // Create purchase.requisition with its lines (stays in draft for review in Odoo Compras)
+    // Create the request with its lines (stays in draft for review in Odoo Compras)
     const requisitionValues: Record<string, any> = {
       origin: origin || 'Autodesk Inventor LDM',
       line_ids: lineCommands
     };
-    if (Number(partnerId) > 0) requisitionValues.vendor_id = Number(partnerId);
+    if (!isPurchaseRequest && Number(partnerId) > 0) requisitionValues.vendor_id = Number(partnerId);
 
-    const requisitionId = await executeKw('purchase.requisition', 'create', [requisitionValues]);
+    const requisitionId = await executeKw(targetModel, 'create', [requisitionValues]);
 
-    const reqDetails = await executeKw('purchase.requisition', 'read', [[requisitionId]], { fields: ['name'] });
+    const reqDetails = await executeKw(targetModel, 'read', [[requisitionId]], { fields: ['name'] });
     const rawName = reqDetails?.[0]?.name;
-    const requisitionName = rawName && rawName !== 'New' ? rawName : `#${requisitionId}`;
+    const requisitionName = rawName && !['New', '/'].includes(rawName) ? rawName : `#${requisitionId}`;
     const createdLines = lineCommands.length;
 
     const newLog = {
       id: Date.now(),
       timestamp: new Date().toISOString().replace('T', ' ').substring(0, 19),
       action: 'PURCHASE_REQUISITION',
-      target: `purchase.requisition [${requisitionName}]`,
+      target: `${targetModel} [${requisitionName}]`,
       status: 'OK',
-      details: `Requisición de compra real ${requisitionName} creada en Odoo con ${createdLines} líneas.`
+      details: `${docLabel} real ${requisitionName} creada en Odoo con ${createdLines} líneas.`
     };
     mockState.syncLogs.unshift(newLog);
 
     return res.json({
       success: true,
+      model: targetModel,
       requisitionId,
       requisitionName,
       linesCount: createdLines,
-      message: `¡Requisición de compra ${requisitionName} generada en Odoo con ${createdLines} líneas de la LDM!`
+      message: `¡${docLabel} ${requisitionName} generada en Odoo con ${createdLines} líneas de la LDM!`
     });
 
   } catch (err: any) {
