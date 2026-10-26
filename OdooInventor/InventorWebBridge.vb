@@ -33,7 +33,8 @@ Public Class InventorWebBridge
             ' Se usa 127.0.0.1: en Windows "localhost" intenta primero ::1 (IPv6) y el
             ' servidor Node escucha solo en IPv4, lo que demora ~2 s y vencía el timeout.
             Try
-                Using client As New HttpClient()
+                Using handler As New HttpClientHandler() With {.UseProxy = False},
+                      client As New HttpClient(handler)
                     client.Timeout = TimeSpan.FromMilliseconds(2000)
                     Dim resp = client.GetAsync("http://127.0.0.1:3000/api/odoo/state").Result
                     If resp.IsSuccessStatusCode Then
