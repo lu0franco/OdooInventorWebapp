@@ -640,7 +640,7 @@ async function startServer() {
 
   const server = http.createServer(app);
   server.listen(PORT, '0.0.0.0', () => {
-    console.log(`[OdooInventor] Server running on http://0.0.0.0:${PORT}`);
+    console.log(`[OdooInventor] Server running on http://localhost:${PORT}`);
   });
 }
 
