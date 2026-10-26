@@ -204,9 +204,139 @@ app.post('/api/odoo/authenticate', async (req: Request, res: Response) => {
   }
 });
 
+type ExecuteKw = (model: string, method: string, args: any[], kwargs?: any) => Promise<any>;
+
+async function connectOdoo(url: string, db: string, login: string, apiKey: string): Promise<ExecuteKw> {
+  const cleanUrl = url.trim().replace(/\/+$/, '').replace(/\/(odoo|web)$/i, '');
+  const jsonRpcUrl = `${cleanUrl}/jsonrpc`;
+
+  const call = async (service: string, method: string, args: any[]) => {
+    const resp = await fetch(jsonRpcUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ jsonrpc: '2.0', method: 'call', params: { service, method, args }, id: Date.now() })
+    });
+    const d = await resp.json();
+    if (d.error) throw new Error(d.error.data?.message || d.error.message);
+    return d.result;
+  };
+
+  const uid = await call('common', 'authenticate', [db, login, apiKey, {}]);
+  if (!uid) throw Object.assign(new Error('Credenciales inválidas en Odoo.'), { status: 401 });
+
+  return (model, method, args, kwargs = {}) =>
+    call('object', 'execute_kw', [db, uid, apiKey, model, method, args, kwargs]);
+}
+
+interface ProductCandidate {
+  id: number;
+  default_code: string | false;
+  display_name: string;
+  score: number;
+}
+
+const normalizeText = (s: string) =>
+  (s || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
+
+const MATCH_STOPWORDS = new Set(['con', 'para', 'sin', 'del', 'los', 'las', 'por', 'una', 'uno', 'and', 'the']);
+
+const searchTokens = (s: string) =>
+  Array.from(new Set(
+    normalizeText(s).split(/[^a-z0-9]+/).filter(t => t.length >= 3 && !MATCH_STOPWORDS.has(t))
+  )).slice(0, 8);
+
+// Find existing purchasable products similar to an Inventor item (exact code first, then by shared words)
+async function findProductCandidates(executeKw: ExecuteKw, partNumber: string, text: string, limit = 8): Promise<ProductCandidate[]> {
+  const fields = ['id', 'default_code', 'display_name'];
+  const byId = new Map<number, ProductCandidate>();
+  const code = (partNumber || '').trim();
+
+  if (code) {
+    const exact = await executeKw('product.product', 'search_read', [[['default_code', '=', code]]], { fields, limit: 3 });
+    for (const p of exact || []) byId.set(p.id, { ...p, score: 1000 });
+  }
+
+  const tokens = searchTokens(`${code} ${text || ''}`);
+  if (tokens.length) {
+    const conditions = tokens.flatMap(t => [['name', 'ilike', t], ['default_code', 'ilike', t]]);
+    const domain = ['&', ['purchase_ok', '=', true], ...Array(conditions.length - 1).fill('|'), ...conditions];
+    const found = await executeKw('product.product', 'search_read', [domain], { fields, limit: 60 });
+    for (const p of found || []) {
+      if (byId.has(p.id)) continue;
+      const haystack = normalizeText(`${p.default_code || ''} ${p.display_name || ''}`);
+      const score = tokens.filter(t => haystack.includes(t)).length;
+      byId.set(p.id, { ...p, score });
+    }
+  }
+
+  return Array.from(byId.values()).sort((a, b) => b.score - a.score).slice(0, limit);
+}
+
+// Suggest existing Odoo products for each LDM item (no products are created)
+app.post('/api/odoo/match-products', async (req: Request, res: Response) => {
+  const { url, db, login, apiKey, items = [] } = req.body as {
+    url?: string; db?: string; login?: string; apiKey?: string;
+    items: { key: string; partNumber?: string; description?: string; query?: string }[];
+  };
+
+  const matches: Record<string, ProductCandidate[]> = {};
+
+  if (!url || !db || !login || !apiKey) {
+    items.forEach((item, idx) => {
+      const base = item.query || item.description || item.partNumber || 'Producto';
+      matches[item.key] = [
+        { id: 9000 + idx * 2, default_code: `SIM-${1000 + idx}`, display_name: `[SIM-${1000 + idx}] ${base}`, score: 2 },
+        { id: 9001 + idx * 2, default_code: `SIM-${2000 + idx}`, display_name: `[SIM-${2000 + idx}] ${base} (alternativo)`, score: 1 }
+      ];
+    });
+    return res.json({ success: true, simulated: true, matches });
+  }
+
+  try {
+    const executeKw = await connectOdoo(url, db, login, apiKey);
+    for (const item of items) {
+      matches[item.key] = item.query
+        ? await findProductCandidates(executeKw, '', item.query)
+        : await findProductCandidates(executeKw, item.partNumber || '', item.description || '');
+    }
+    return res.json({ success: true, matches });
+  } catch (err: any) {
+    return res.status(err.status || 500).json({ success: false, error: err.message || String(err) });
+  }
+});
+
+interface RequisitionItem {
+  productId?: number;
+  partNumber?: string;
+  description?: string;
+  material?: string;
+  uom?: string;
+  qty?: number;
+  quantity?: number;
+}
+
+const inventorLineDescription = (item: RequisitionItem) => {
+  const qty = Number(item.qty || item.quantity || 1);
+  return [
+    [item.partNumber, item.description].filter(Boolean).join(' - '),
+    item.material ? `Material: ${item.material}` : '',
+    `Cant. Inventor: ${qty} ${item.uom || ''}`.trim()
+  ].filter(Boolean).join(' | ');
+};
+
 // Create Purchase Requisition (purchase.requisition & purchase.requisition.line) from BOM/LDM
+// Every item must reference an existing product (productId); products are never created here.
 app.post('/api/odoo/create-purchase-requisition', async (req: Request, res: Response) => {
-  const { url, db, login, apiKey, partnerId, items = [], origin = 'Autodesk Inventor LDM' } = req.body;
+  const { url, db, login, apiKey, partnerId, origin = 'Autodesk Inventor LDM' } = req.body;
+  const items: RequisitionItem[] = req.body.items || [];
+
+  const missing = items.filter(i => !Number(i.productId)).map(i => i.partNumber || i.description || '?');
+  if (missing.length) {
+    return res.status(400).json({
+      success: false,
+      error: `Falta elegir el producto de Odoo para: ${missing.join(', ')}`
+    });
+  }
 
   if (!url || !db || !login || !apiKey) {
     // If credentials not provided, simulate successful creation for UI test mode
@@ -227,82 +357,28 @@ app.post('/api/odoo/create-purchase-requisition', async (req: Request, res: Resp
       requisitionId: Math.floor(100 + Math.random() * 900),
       requisitionName: fakeReqNumber,
       linesCount: items.length,
+      lines: items.map(i => ({ productId: Number(i.productId), description: inventorLineDescription(i) })),
       message: `¡Requisición de compra ${fakeReqNumber} creada exitosamente en Odoo con ${items.length} líneas de la LDM!`
     });
   }
 
-  let cleanUrl = url.trim().replace(/\/+$/, '');
-  cleanUrl = cleanUrl.replace(/\/(odoo|web)$/i, '');
-  const jsonRpcUrl = `${cleanUrl}/jsonrpc`;
-
   try {
-    // 1. Authenticate
-    const authRes = await fetch(jsonRpcUrl, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        jsonrpc: '2.0',
-        method: 'call',
-        params: {
-          service: 'common',
-          method: 'authenticate',
-          args: [db, login, apiKey, {}]
-        },
-        id: 1
-      })
-    });
-    const authData = await authRes.json();
-    const uid = authData.result;
-    if (!uid) {
-      return res.status(401).json({ success: false, error: 'Credenciales inválidas en Odoo.' });
-    }
+    const executeKw = await connectOdoo(url, db, login, apiKey);
 
-    // Helper for execute_kw
-    const executeKw = async (model: string, method: string, args: any[], kwargs: any = {}) => {
-      const resp = await fetch(jsonRpcUrl, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          jsonrpc: '2.0',
-          method: 'call',
-          params: {
-            service: 'object',
-            method: 'execute_kw',
-            args: [db, uid, apiKey, model, method, args, kwargs]
-          },
-          id: Date.now()
-        })
-      });
-      const d = await resp.json();
-      if (d.error) throw new Error(d.error.data?.message || d.error.message);
-      return d.result;
-    };
+    // Custom line description field: product_description_variants (Odoo 14+) or name as fallback
+    const lineFields = await executeKw('purchase.requisition.line', 'fields_get', [], { attributes: ['type'] });
+    const descField = ['product_description_variants', 'name'].find(f => lineFields?.[f]);
 
-    // 2. For each LDM item, find or create product and build purchase.requisition.line commands
-    const lineCommands: any[] = [];
-    for (const item of items) {
-      if (!item.partNumber) continue;
-
-      const found = await executeKw('product.product', 'search_read', [
-        [['default_code', '=', item.partNumber.trim()]]
-      ], { fields: ['id', 'name'], limit: 1 });
-
-      let productId = found?.[0]?.id;
-      if (!productId) {
-        productId = await executeKw('product.product', 'create', [{
-          default_code: item.partNumber.trim(),
-          name: item.description || item.partNumber,
-          type: 'consu'
-        }]);
-      }
-
-      lineCommands.push([0, 0, {
-        product_id: productId,
+    const lineCommands = items.map(item => {
+      const line: Record<string, any> = {
+        product_id: Number(item.productId),
         product_qty: Number(item.qty || item.quantity || 1)
-      }]);
-    }
+      };
+      if (descField) line[descField] = inventorLineDescription(item);
+      return [0, 0, line];
+    });
 
-    // 3. Create purchase.requisition with its lines (stays in draft for review in Odoo Compras)
+    // Create purchase.requisition with its lines (stays in draft for review in Odoo Compras)
     const requisitionValues: Record<string, any> = {
       origin: origin || 'Autodesk Inventor LDM',
       line_ids: lineCommands
@@ -335,7 +411,7 @@ app.post('/api/odoo/create-purchase-requisition', async (req: Request, res: Resp
     });
 
   } catch (err: any) {
-    return res.status(500).json({ success: false, error: err.message || String(err) });
+    return res.status(err.status || 500).json({ success: false, error: err.message || String(err) });
   }
 });
 

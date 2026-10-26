@@ -32,6 +32,19 @@ import {
 import * as XLSX from 'xlsx';
 import { CadPart, BomItem } from '../types';
 
+interface ProductCandidate {
+  id: number;
+  default_code: string | false;
+  display_name: string;
+  score: number;
+}
+
+interface ProductMatch {
+  candidates: ProductCandidate[];
+  selectedId: number | null;
+  query: string;
+}
+
 interface BOMSyncManagerProps {
   part: CadPart | null;
   onUpdateBom: (newBom: BomItem[]) => void;
@@ -71,6 +84,8 @@ export const BOMSyncManager: React.FC<BOMSyncManagerProps> = ({
   const [poPartnerId, setPoPartnerId] = useState('1');
   const [isCreatingPo, setIsCreatingPo] = useState(false);
   const [poResult, setPoResult] = useState<{ success: boolean; message: string; orderName?: string } | null>(null);
+  const [poMatches, setPoMatches] = useState<Record<string, ProductMatch>>({});
+  const [isMatchingProducts, setIsMatchingProducts] = useState(false);
 
   // New Item State
   const [newPartNumber, setNewPartNumber] = useState('');
@@ -384,6 +399,8 @@ export const BOMSyncManager: React.FC<BOMSyncManagerProps> = ({
     ? bomList.filter(item => item.isCom === true)
     : bomList;
 
+  const unassignedCount = itemsToUpload.filter(item => !poMatches[item.id]?.selectedId).length;
+
   // Filtrado compuesto: Búsqueda de texto + Filtro COM
   const filteredBom = bomList.filter(item => {
     const matchesSearch = 
@@ -676,6 +693,65 @@ export const BOMSyncManager: React.FC<BOMSyncManagerProps> = ({
     }
   };
 
+  const odooCredentials = () => ({
+    url: 'https://deblasi.adhoc.ar',
+    db: poDb.trim(),
+    login: poLogin.trim(),
+    apiKey: poApiKey.trim()
+  });
+
+  // Busca en Odoo productos existentes parecidos a cada pieza (no crea productos)
+  const handleMatchProducts = async (targets: { item: BomItem; query?: string }[]) => {
+    if (targets.length === 0) return;
+    setIsMatchingProducts(true);
+    setPoResult(null);
+    try {
+      const res = await fetch('/api/odoo/match-products', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          ...odooCredentials(),
+          items: targets.map(({ item, query }) => ({
+            key: item.id,
+            partNumber: item.partNumber,
+            description: item.description,
+            query
+          }))
+        })
+      });
+      const data = await res.json();
+      if (!data.success) {
+        setPoResult({ success: false, message: data.error || 'Error al buscar productos en Odoo' });
+        return;
+      }
+      setPoMatches(prev => {
+        const next = { ...prev };
+        for (const { item, query } of targets) {
+          const candidates: ProductCandidate[] = data.matches?.[item.id] || [];
+          const exact = candidates.find(c => c.score >= 1000);
+          const previous = prev[item.id]?.selectedId ?? null;
+          next[item.id] = {
+            candidates,
+            query: query ?? prev[item.id]?.query ?? '',
+            selectedId: exact?.id ?? (candidates.some(c => c.id === previous) ? previous : null)
+          };
+        }
+        return next;
+      });
+    } catch (err: any) {
+      setPoResult({ success: false, message: err.message || 'Error de red' });
+    } finally {
+      setIsMatchingProducts(false);
+    }
+  };
+
+  const updatePoMatch = (itemId: string, changes: Partial<ProductMatch>) => {
+    setPoMatches(prev => ({
+      ...prev,
+      [itemId]: { ...(prev[itemId] ?? { candidates: [], selectedId: null, query: '' }), ...changes }
+    }));
+  };
+
   const handleCreatePurchaseOrder = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!part) return;
@@ -690,6 +766,16 @@ export const BOMSyncManager: React.FC<BOMSyncManagerProps> = ({
       setPoResult({
         success: false,
         message: 'No hay piezas con el tick COM activo para generar la requisición de compra. Activá el tick COM en las filas deseadas o desmarcá la opción de subir solo COM.'
+      });
+      setIsCreatingPo(false);
+      return;
+    }
+
+    const unassigned = itemsToUpload.filter(b => !poMatches[b.id]?.selectedId);
+    if (unassigned.length > 0) {
+      setPoResult({
+        success: false,
+        message: `Elegí el producto de Odoo para: ${unassigned.map(b => b.partNumber).join(', ')}`
       });
       setIsCreatingPo(false);
       return;
@@ -713,8 +799,11 @@ export const BOMSyncManager: React.FC<BOMSyncManagerProps> = ({
             ? `Inventor LDM ${part.partNumber} [COM: ${itemsToUpload.length} ítems]`
             : `Inventor LDM ${part.partNumber}`,
           items: itemsToUpload.map(b => ({
+            productId: poMatches[b.id]?.selectedId,
             partNumber: b.partNumber,
             description: b.description,
+            material: b.material,
+            uom: b.uom,
             qty: b.qty
           }))
         })
@@ -2211,31 +2300,81 @@ End Sub`;
                   )}
                 </div>
 
-                <div className="max-h-36 overflow-y-auto border border-slate-800 rounded-lg bg-slate-950 divide-y divide-slate-850 text-[11px]">
+                <div className="max-h-72 overflow-y-auto border border-slate-800 rounded-lg bg-slate-950 divide-y divide-slate-850 text-[11px]">
                   {itemsToUpload.length === 0 ? (
                     <div className="p-4 text-center text-slate-500 italic">
                       Ningún componente seleccionado para subir a la requisición.
                     </div>
                   ) : (
-                    itemsToUpload.map((item) => (
-                      <div key={item.id} className="p-2 flex items-center justify-between hover:bg-slate-900/60 transition gap-2">
-                        <div className="flex items-center space-x-2 truncate min-w-0">
-                          <button
-                            type="button"
-                            onClick={(e) => handleToggleCom(item.id, e)}
-                            className="px-1.5 py-0.5 rounded text-[10px] font-mono font-bold bg-emerald-500/20 text-emerald-400 border border-emerald-500/40 hover:bg-rose-950 hover:text-rose-300 hover:border-rose-700 shrink-0"
-                            title="Hacé clic para destildar COM y quitar de esta requisición"
-                          >
-                            ✓ COM
-                          </button>
-                          <span className="font-mono font-bold text-orange-400 shrink-0">{item.partNumber}</span>
-                          <span className="text-slate-300 truncate">{item.description}</span>
+                    itemsToUpload.map((item) => {
+                      const match = poMatches[item.id];
+                      return (
+                        <div key={item.id} className="p-2 space-y-1.5 hover:bg-slate-900/60 transition">
+                          <div className="flex items-center justify-between gap-2">
+                            <div className="flex items-center space-x-2 truncate min-w-0">
+                              <button
+                                type="button"
+                                onClick={(e) => handleToggleCom(item.id, e)}
+                                className="px-1.5 py-0.5 rounded text-[10px] font-mono font-bold bg-emerald-500/20 text-emerald-400 border border-emerald-500/40 hover:bg-rose-950 hover:text-rose-300 hover:border-rose-700 shrink-0"
+                                title="Hacé clic para destildar COM y quitar de esta requisición"
+                              >
+                                ✓ COM
+                              </button>
+                              <span className="font-mono font-bold text-orange-400 shrink-0">{item.partNumber}</span>
+                              <span className="text-slate-300 truncate">{item.description}</span>
+                            </div>
+                            <div className="flex items-center space-x-2 shrink-0">
+                              <span className="font-bold text-slate-100 font-mono">{item.qty} {item.uom}</span>
+                            </div>
+                          </div>
+                          <div className="flex items-center gap-1.5">
+                            <select
+                              value={match?.selectedId ?? ''}
+                              onChange={(e) => updatePoMatch(item.id, { selectedId: e.target.value ? Number(e.target.value) : null })}
+                              className={`flex-1 min-w-0 px-2 py-1 bg-slate-900 border rounded text-[11px] ${
+                                match?.selectedId ? 'border-emerald-700 text-slate-100' : 'border-amber-700 text-amber-200'
+                              }`}
+                              title="Producto existente en Odoo que se usará en esta línea"
+                            >
+                              <option value="">
+                                {!match
+                                  ? 'Tocá "Buscar productos en Odoo"'
+                                  : match.candidates.length > 0
+                                    ? '— Elegí el producto de Odoo —'
+                                    : 'Sin coincidencias: probá otra búsqueda'}
+                              </option>
+                              {match?.candidates.map(c => (
+                                <option key={c.id} value={c.id}>
+                                  {c.display_name}{c.score >= 1000 ? ' (código exacto)' : ''}
+                                </option>
+                              ))}
+                            </select>
+                            <input
+                              type="text"
+                              placeholder="Otra búsqueda…"
+                              value={match?.query ?? ''}
+                              onChange={(e) => updatePoMatch(item.id, { query: e.target.value })}
+                              onKeyDown={(e) => {
+                                if (e.key === 'Enter') {
+                                  e.preventDefault();
+                                  handleMatchProducts([{ item, query: (match?.query || '').trim() || undefined }]);
+                                }
+                              }}
+                              className="w-28 px-2 py-1 bg-slate-900 border border-slate-700 rounded text-[11px] text-slate-100"
+                            />
+                            <button
+                              type="button"
+                              onClick={() => handleMatchProducts([{ item, query: (match?.query || '').trim() || undefined }])}
+                              disabled={isMatchingProducts}
+                              className="p-1 rounded border border-slate-700 text-slate-300 hover:text-white hover:bg-slate-800 disabled:opacity-50"
+                              title="Buscar productos de Odoo para esta pieza"
+                            >
+                              <Search className="w-3.5 h-3.5" />
+                            </button>
+                          </div>
                         </div>
-                        <div className="flex items-center space-x-2 shrink-0">
-                          <span className="font-bold text-slate-100 font-mono">{item.qty} {item.uom}</span>
-                        </div>
-                      </div>
-                    ))
+                      );
+                    })
                   )}
                 </div>
               </div>
@@ -2287,10 +2426,27 @@ End Sub`;
                 </div>
               </div>
 
+              <button
+                type="button"
+                onClick={() => handleMatchProducts(itemsToUpload.map(item => ({ item })))}
+                disabled={isMatchingProducts || itemsToUpload.length === 0}
+                className="w-full px-3 py-2 bg-slate-800 hover:bg-slate-700 text-slate-100 font-semibold rounded border border-slate-600 flex items-center justify-center space-x-1.5 disabled:opacity-50"
+              >
+                <Search className="w-3.5 h-3.5" />
+                <span>
+                  {isMatchingProducts
+                    ? 'Buscando en Odoo...'
+                    : `Buscar productos en Odoo (${itemsToUpload.length} piezas)`}
+                </span>
+              </button>
+
               <div className="p-2.5 bg-slate-950/70 rounded border border-slate-800 text-[11px] text-slate-400 space-y-1">
                 <span className="font-semibold text-slate-300">Modo de prueba:</span>
                 <p>
                   Si dejás los campos vacíos, se creará una requisición en <b>modo simulación</b> con los ítems filtrados. Si ingresás tus credenciales, se enviará directo a tu Odoo en <code>deblasi.adhoc.ar</code>.
+                </p>
+                <p>
+                  No se crean productos: cada línea usa el producto existente que elijas y lleva en la descripción los datos de Inventor (código, descripción, material y cantidad).
                 </p>
               </div>
 
@@ -2322,14 +2478,16 @@ End Sub`;
                 </button>
                 <button
                   type="submit"
-                  disabled={isCreatingPo || itemsToUpload.length === 0}
+                  disabled={isCreatingPo || itemsToUpload.length === 0 || unassignedCount > 0}
                   className="px-4 py-1.5 bg-emerald-600 hover:bg-emerald-500 active:bg-emerald-700 text-white font-semibold rounded shadow flex items-center space-x-1.5 disabled:opacity-50"
                 >
                   <Send className="w-3.5 h-3.5" />
                   <span>
                     {isCreatingPo 
                       ? 'Enviando a Odoo...' 
-                      : `Crear Requisición de Compra (${itemsToUpload.length} ítems)`}
+                      : unassignedCount > 0
+                        ? `Falta elegir producto (${unassignedCount})`
+                        : `Crear Requisición de Compra (${itemsToUpload.length} ítems)`}
                   </span>
                 </button>
               </div>
