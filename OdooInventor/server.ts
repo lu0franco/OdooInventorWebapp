@@ -204,140 +204,246 @@ app.post('/api/odoo/authenticate', async (req: Request, res: Response) => {
   }
 });
 
-// Create Purchase Order (purchase.order & purchase.order.line) from BOM/LDM
-app.post('/api/odoo/create-purchase-order', async (req: Request, res: Response) => {
-  const { url, db, login, apiKey, partnerId = 1, items = [], origin = 'Autodesk Inventor LDM' } = req.body;
+type ExecuteKw = (model: string, method: string, args: any[], kwargs?: any) => Promise<any>;
+
+async function connectOdoo(url: string, db: string, login: string, apiKey: string): Promise<ExecuteKw> {
+  const cleanUrl = url.trim().replace(/\/+$/, '').replace(/\/(odoo|web)$/i, '');
+  const jsonRpcUrl = `${cleanUrl}/jsonrpc`;
+
+  const call = async (service: string, method: string, args: any[]) => {
+    const resp = await fetch(jsonRpcUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ jsonrpc: '2.0', method: 'call', params: { service, method, args }, id: Date.now() })
+    });
+    const d = await resp.json();
+    if (d.error) throw new Error(d.error.data?.message || d.error.message);
+    return d.result;
+  };
+
+  const uid = await call('common', 'authenticate', [db, login, apiKey, {}]);
+  if (!uid) throw Object.assign(new Error('Credenciales inválidas en Odoo.'), { status: 401 });
+
+  return (model, method, args, kwargs = {}) =>
+    call('object', 'execute_kw', [db, uid, apiKey, model, method, args, kwargs]);
+}
+
+interface ProductCandidate {
+  id: number;
+  default_code: string | false;
+  display_name: string;
+  score: number;
+}
+
+const normalizeText = (s: string) =>
+  (s || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
+
+const MATCH_STOPWORDS = new Set(['con', 'para', 'sin', 'del', 'los', 'las', 'por', 'una', 'uno', 'and', 'the']);
+
+const searchTokens = (s: string) =>
+  Array.from(new Set(
+    normalizeText(s).split(/[^a-z0-9]+/).filter(t => t.length >= 3 && !MATCH_STOPWORDS.has(t))
+  )).slice(0, 8);
+
+// Find existing purchasable products similar to an Inventor item (exact code first, then by shared words)
+async function findProductCandidates(executeKw: ExecuteKw, partNumber: string, text: string, limit = 20): Promise<ProductCandidate[]> {
+  const fields = ['id', 'default_code', 'display_name'];
+  const byId = new Map<number, ProductCandidate>();
+  const code = (partNumber || '').trim();
+
+  if (code) {
+    const exact = await executeKw('product.product', 'search_read', [[['default_code', '=', code]]], { fields, limit: 3 });
+    for (const p of exact || []) byId.set(p.id, { ...p, score: 1000 });
+  }
+
+  const tokens = searchTokens(`${code} ${text || ''}`);
+  if (tokens.length) {
+    const conditions = tokens.flatMap(t => [['name', 'ilike', t], ['default_code', 'ilike', t]]);
+    const domain = ['&', ['purchase_ok', '=', true], ...Array(conditions.length - 1).fill('|'), ...conditions];
+    const found = await executeKw('product.product', 'search_read', [domain], { fields, limit: 60 });
+    for (const p of found || []) {
+      if (byId.has(p.id)) continue;
+      const haystack = normalizeText(`${p.default_code || ''} ${p.display_name || ''}`);
+      const score = tokens.filter(t => haystack.includes(t)).length;
+      byId.set(p.id, { ...p, score });
+    }
+  }
+
+  return Array.from(byId.values()).sort((a, b) => b.score - a.score).slice(0, limit);
+}
+
+// Suggest existing Odoo products for each LDM item (no products are created)
+app.post('/api/odoo/match-products', async (req: Request, res: Response) => {
+  const { url, db, login, apiKey, items = [] } = req.body as {
+    url?: string; db?: string; login?: string; apiKey?: string;
+    items: { key: string; partNumber?: string; description?: string; query?: string }[];
+  };
+
+  const matches: Record<string, ProductCandidate[]> = {};
+
+  if (!url || !db || !login || !apiKey) {
+    items.forEach((item, idx) => {
+      const base = item.query || item.description || item.partNumber || 'Producto';
+      matches[item.key] = [
+        { id: 9000 + idx * 2, default_code: `SIM-${1000 + idx}`, display_name: `[SIM-${1000 + idx}] ${base}`, score: 2 },
+        { id: 9001 + idx * 2, default_code: `SIM-${2000 + idx}`, display_name: `[SIM-${2000 + idx}] ${base} (alternativo)`, score: 1 }
+      ];
+    });
+    return res.json({ success: true, simulated: true, matches });
+  }
+
+  try {
+    const executeKw = await connectOdoo(url, db, login, apiKey);
+    for (const item of items) {
+      matches[item.key] = item.query
+        ? await findProductCandidates(executeKw, '', item.query)
+        : await findProductCandidates(executeKw, item.partNumber || '', item.description || '');
+    }
+    return res.json({ success: true, matches });
+  } catch (err: any) {
+    return res.status(err.status || 500).json({ success: false, error: err.message || String(err) });
+  }
+});
+
+interface RequisitionItem {
+  productId?: number;
+  partNumber?: string;
+  description?: string;
+  material?: string;
+  uom?: string;
+  qty?: number;
+  quantity?: number;
+}
+
+const inventorLineDescription = (item: RequisitionItem) => {
+  const qty = Number(item.qty || item.quantity || 1);
+  return [
+    [item.partNumber, item.description].filter(Boolean).join(' - '),
+    item.material ? `Material: ${item.material}` : '',
+    `Cant. Inventor: ${qty} ${item.uom || ''}`.trim()
+  ].filter(Boolean).join(' | ');
+};
+
+// Create Purchase Requisition (purchase.requisition) or OCA Purchase Request (purchase.request) from BOM/LDM
+// Every item must reference an existing product (productId); products are never created here.
+app.post('/api/odoo/create-purchase-requisition', async (req: Request, res: Response) => {
+  const { url, db, login, apiKey, partnerId, origin = 'Autodesk Inventor LDM' } = req.body;
+  const items: RequisitionItem[] = req.body.items || [];
+
+  const missing = items.filter(i => !Number(i.productId)).map(i => i.partNumber || i.description || '?');
+  if (missing.length) {
+    return res.status(400).json({
+      success: false,
+      error: `Falta elegir el producto de Odoo para: ${missing.join(', ')}`
+    });
+  }
 
   if (!url || !db || !login || !apiKey) {
     // If credentials not provided, simulate successful creation for UI test mode
-    const fakePoNumber = `PO2027-${Math.floor(1000 + Math.random() * 9000)}`;
+    const fakeReqNumber = `PR2027-${Math.floor(1000 + Math.random() * 9000)}`;
     const newLog = {
       id: Date.now(),
       timestamp: new Date().toISOString().replace('T', ' ').substring(0, 19),
-      action: 'PURCHASE_ORDER',
-      target: `purchase.order [${fakePoNumber}]`,
+      action: 'PURCHASE_REQUISITION',
+      target: `purchase.requisition [${fakeReqNumber}]`,
       status: 'OK',
-      details: `Pedido de compra ${fakePoNumber} generado con ${items.length} líneas de la LDM.`
+      details: `Requisición de compra ${fakeReqNumber} generada con ${items.length} líneas de la LDM.`
     };
     mockState.syncLogs.unshift(newLog);
 
     return res.json({
       success: true,
       simulated: true,
-      orderId: Math.floor(100 + Math.random() * 900),
-      orderName: fakePoNumber,
+      requisitionId: Math.floor(100 + Math.random() * 900),
+      requisitionName: fakeReqNumber,
       linesCount: items.length,
-      message: `¡Pedido de compra ${fakePoNumber} creado exitosamente en Odoo con ${items.length} líneas de la LDM!`
+      lines: items.map(i => ({ productId: Number(i.productId), description: inventorLineDescription(i) })),
+      message: `¡Requisición de compra ${fakeReqNumber} creada exitosamente en Odoo con ${items.length} líneas de la LDM!`
     });
   }
 
-  let cleanUrl = url.trim().replace(/\/+$/, '');
-  cleanUrl = cleanUrl.replace(/\/(odoo|web)$/i, '');
-  const jsonRpcUrl = `${cleanUrl}/jsonrpc`;
-
+  let docLabel = 'Requisición de compra';
   try {
-    // 1. Authenticate
-    const authRes = await fetch(jsonRpcUrl, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        jsonrpc: '2.0',
-        method: 'call',
-        params: {
-          service: 'common',
-          method: 'authenticate',
-          args: [db, login, apiKey, {}]
-        },
-        id: 1
-      })
-    });
-    const authData = await authRes.json();
-    const uid = authData.result;
-    if (!uid) {
-      return res.status(401).json({ success: false, error: 'Credenciales inválidas en Odoo.' });
-    }
+    const executeKw = await connectOdoo(url, db, login, apiKey);
 
-    // Helper for execute_kw
-    const executeKw = async (model: string, method: string, args: any[], kwargs: any = {}) => {
-      const resp = await fetch(jsonRpcUrl, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          jsonrpc: '2.0',
-          method: 'call',
-          params: {
-            service: 'object',
-            method: 'execute_kw',
-            args: [db, uid, apiKey, model, method, args, kwargs]
-          },
-          id: Date.now()
-        })
-      });
-      const d = await resp.json();
-      if (d.error) throw new Error(d.error.data?.message || d.error.message);
-      return d.result;
-    };
-
-    // 2. Create purchase.order
-    const orderId = await executeKw('purchase.order', 'create', [{
-      partner_id: Number(partnerId) || 1,
-      origin: origin || 'Autodesk Inventor LDM'
-    }]);
-
-    // Read order name (e.g. PO00045)
-    const orderDetails = await executeKw('purchase.order', 'read', [[orderId]], { fields: ['name'] });
-    const orderName = orderDetails?.[0]?.name || `PO#${orderId}`;
-
-    // 3. For each LDM item, find or create product and add to purchase.order.line
-    let createdLines = 0;
-    for (const item of items) {
-      if (!item.partNumber) continue;
-
-      // Search product.product
-      const found = await executeKw('product.product', 'search_read', [
-        [['default_code', '=', item.partNumber.trim()]]
-      ], { fields: ['id', 'name'], limit: 1 });
-
-      let productId = found?.[0]?.id;
-      if (!productId) {
-        // Create product
-        productId = await executeKw('product.product', 'create', [{
-          default_code: item.partNumber.trim(),
-          name: item.description || item.partNumber,
-          type: 'consu'
-        }]);
+    // Use whichever request model is installed: purchase.requisition (Odoo Acuerdos de compra) or purchase.request (OCA Solicitudes de compra).
+    // Probed with fields_get on the line model because regular users can't read the models registry.
+    let targetModel: string | undefined;
+    let lineFields: Record<string, any> = {};
+    const probeErrors: string[] = [];
+    for (const model of ['purchase.requisition', 'purchase.request']) {
+      try {
+        lineFields = await executeKw(`${model}.line`, 'fields_get', [], { attributes: ['type'] });
+        targetModel = model;
+        break;
+      } catch (probeErr: any) {
+        probeErrors.push(`${model}: ${probeErr.message || probeErr}`);
       }
-
-      // Add line to purchase.order.line
-      await executeKw('purchase.order.line', 'create', [{
-        order_id: orderId,
-        product_id: productId,
-        name: item.description || item.partNumber,
-        product_qty: Number(item.qty || item.quantity || 1)
-      }]);
-      createdLines++;
     }
+    if (!targetModel) {
+      return res.status(400).json({
+        success: false,
+        error: `No se pudo usar purchase.requisition ni purchase.request en Odoo. ${probeErrors.join(' | ')}`
+      });
+    }
+    const isPurchaseRequest = targetModel === 'purchase.request';
+    docLabel = isPurchaseRequest ? 'Solicitud de compra' : 'Requisición de compra';
+
+    const descField = (isPurchaseRequest ? ['name'] : ['product_description_variants', 'name']).find(f => lineFields?.[f]);
+
+    const uomByProduct = new Map<number, number>();
+    if (lineFields?.product_uom_id) {
+      const productIds = Array.from(new Set(items.map(i => Number(i.productId))));
+      const products = await executeKw('product.product', 'read', [productIds], { fields: ['uom_id'] });
+      for (const p of products || []) if (p.uom_id) uomByProduct.set(p.id, p.uom_id[0]);
+    }
+
+    const lineCommands = items.map(item => {
+      const productId = Number(item.productId);
+      const line: Record<string, any> = {
+        product_id: productId,
+        product_qty: Number(item.qty || item.quantity || 1)
+      };
+      if (descField) line[descField] = inventorLineDescription(item);
+      if (uomByProduct.has(productId)) line.product_uom_id = uomByProduct.get(productId);
+      return [0, 0, line];
+    });
+
+    // Create the request with its lines (stays in draft for review in Odoo Compras)
+    const requisitionValues: Record<string, any> = {
+      origin: origin || 'Autodesk Inventor LDM',
+      line_ids: lineCommands
+    };
+    if (!isPurchaseRequest && Number(partnerId) > 0) requisitionValues.vendor_id = Number(partnerId);
+
+    const requisitionId = await executeKw(targetModel, 'create', [requisitionValues]);
+
+    const reqDetails = await executeKw(targetModel, 'read', [[requisitionId]], { fields: ['name'] });
+    const rawName = reqDetails?.[0]?.name;
+    const requisitionName = rawName && !['New', '/'].includes(rawName) ? rawName : `#${requisitionId}`;
+    const createdLines = lineCommands.length;
 
     const newLog = {
       id: Date.now(),
       timestamp: new Date().toISOString().replace('T', ' ').substring(0, 19),
-      action: 'PURCHASE_ORDER',
-      target: `purchase.order [${orderName}]`,
+      action: 'PURCHASE_REQUISITION',
+      target: `${targetModel} [${requisitionName}]`,
       status: 'OK',
-      details: `Pedido de compra real ${orderName} creado en Odoo con ${createdLines} líneas.`
+      details: `${docLabel} real ${requisitionName} creada en Odoo con ${createdLines} líneas.`
     };
     mockState.syncLogs.unshift(newLog);
 
     return res.json({
       success: true,
-      orderId,
-      orderName,
+      model: targetModel,
+      requisitionId,
+      requisitionName,
       linesCount: createdLines,
-      message: `¡Pedido de compra ${orderName} generado en Odoo con ${createdLines} líneas de la LDM!`
+      message: `¡${docLabel} ${requisitionName} generada en Odoo con ${createdLines} líneas de la LDM!`
     });
 
   } catch (err: any) {
-    return res.status(500).json({ success: false, error: err.message || String(err) });
+    return res.status(err.status || 500).json({ success: false, error: err.message || String(err) });
   }
 });
 
@@ -642,7 +748,7 @@ async function startServer() {
 
   const server = http.createServer(app);
   server.listen(PORT, '0.0.0.0', () => {
-    console.log(`[OdooInventor] Server running on http://0.0.0.0:${PORT}`);
+    console.log(`[OdooInventor] Server running on http://localhost:${PORT}`);
   });
 }
 
