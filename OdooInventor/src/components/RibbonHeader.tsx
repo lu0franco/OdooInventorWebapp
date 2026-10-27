@@ -65,6 +65,7 @@ export const RibbonHeader: React.FC<RibbonHeaderProps> = ({
       id: 'ODOO', 
       label: tabLocation === 'TECNICA' ? 'TECNICA (Integrado)' : 'ODOO ERP (TAB_ODOO)' 
     },
+    { id: 'REQUISICION', label: 'Requisición de Compra' },
     { id: 'ENSAMBLE', label: 'Ensamblar' },
     { id: 'MODELADO', label: 'Modelo 3D' },
     { id: 'INSPECCION', label: 'Inspeccionar' },

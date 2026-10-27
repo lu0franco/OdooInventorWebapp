@@ -395,7 +395,10 @@ export default function App() {
       {/* Ribbon Header with Autodesk Inventor UI & ODOO Tab */}
       <RibbonHeader
         activeTab={activeTab}
-        setActiveTab={setActiveTab}
+        setActiveTab={(tab) => {
+          setActiveTab(tab);
+          if (tab === 'REQUISICION') setActiveView('bom');
+        }}
         activeView={activeView}
         setActiveView={setActiveView}
         environment={environment}
@@ -418,6 +421,8 @@ export default function App() {
             onUpdateBom={handleUpdateBom}
             onSyncBomToOdoo={handleSyncBomToOdoo}
             isSyncing={isSyncing}
+            requisitionOpen={activeTab === 'REQUISICION'}
+            onRequisitionOpenChange={(open) => setActiveTab(open ? 'REQUISICION' : 'ODOO')}
           />
         )}
 
