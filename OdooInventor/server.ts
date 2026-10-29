@@ -23,6 +23,13 @@ app.get('/download/InventorWebBridge.vb', (_req: Request, res: Response) => {
   res.download(path.join(__dirname, 'InventorWebBridge.vb'), 'InventorWebBridge.vb');
 });
 
+// Endpoint para descargar config.ini fijado a localhost:3000
+app.get('/download/config.ini', (_req: Request, res: Response) => {
+  res.setHeader('Content-Type', 'text/plain');
+  res.setHeader('Content-Disposition', 'attachment; filename="config.ini"');
+  res.send('URL=http://localhost:3000\r\n');
+});
+
 // ==========================================
 // Odoo JSON-RPC Proxy & API
 // Replicating & extending OdooService.vb
@@ -147,6 +154,13 @@ app.post('/api/odoo/test', async (req: Request, res: Response) => {
   }
 });
 
+let savedOdooAuth = {
+  url: 'https://deblasi.adhoc.ar',
+  db: 'odoo',
+  login: 'ing@deblasi.com.ar',
+  apiKey: ''
+};
+
 // Authenticate against Odoo common service
 app.post('/api/odoo/authenticate', async (req: Request, res: Response) => {
   const { url, db, login, password } = req.body;
@@ -157,6 +171,13 @@ app.post('/api/odoo/authenticate', async (req: Request, res: Response) => {
       error: 'Parámetros incompletos (url, db, login, password requeridos)'
     });
   }
+
+  savedOdooAuth = {
+    url: String(url).trim(),
+    db: String(db).trim(),
+    login: String(login).trim(),
+    apiKey: String(password).trim()
+  };
 
   let cleanUrl = url.trim().replace(/\/+$/, '');
   cleanUrl = cleanUrl.replace(/\/(odoo|web)$/i, '');
@@ -567,7 +588,7 @@ app.post('/api/odoo/create-purchase-requisition', async (req: Request, res: Resp
         reqPayload.origin = origin || 'Autodesk Inventor LDM';
       }
       if ('description' in reqFields) {
-        reqPayload.description = notes || 'Solicitud de compra generada desde Autodesk Inventor 2027';
+        reqPayload.description = notes || `Solicitud de compra de componentes comerciales — ${origin || 'Autodesk Inventor LDM'}`;
       }
       if ('date_start' in reqFields) {
         reqPayload.date_start = new Date().toISOString().substring(0, 10);
@@ -578,9 +599,9 @@ app.post('/api/odoo/create-purchase-requisition', async (req: Request, res: Resp
         reqPayload.origin = origin || 'Autodesk Inventor LDM';
       }
       if ('description' in reqFields) {
-        reqPayload.description = notes || 'Solicitud generada desde Autodesk Inventor 2027';
+        reqPayload.description = notes || `Solicitud generada desde Autodesk Inventor 2027 — ${origin || 'LDM'}`;
       } else if ('notes' in reqFields) {
-        reqPayload.notes = notes || 'Solicitud generada desde Autodesk Inventor 2027';
+        reqPayload.notes = notes || `Solicitud generada desde Autodesk Inventor 2027 — ${origin || 'LDM'}`;
       }
       if ('user_id' in reqFields) {
         reqPayload.user_id = uid;
@@ -609,6 +630,7 @@ app.post('/api/odoo/create-purchase-requisition', async (req: Request, res: Resp
       if (targetModel === 'purchase.request') {
         if ('requested_by' in reqFields) minimalPayload.requested_by = uid;
         if ('origin' in reqFields) minimalPayload.origin = origin || 'Autodesk Inventor LDM';
+        if ('description' in reqFields) minimalPayload.description = notes || `Solicitud de compra — ${origin || 'Autodesk Inventor LDM'}`;
       } else {
         if ('origin' in reqFields) minimalPayload.origin = origin || 'Autodesk Inventor LDM';
         if (typeId && 'type_id' in reqFields) minimalPayload.type_id = typeId;
@@ -665,40 +687,58 @@ app.post('/api/odoo/create-purchase-requisition', async (req: Request, res: Resp
         } catch {}
       }
 
-      // 2. Search by default_code (extracting bracketed code like "[247964]" -> "247964")
+      // 2. Search by default_code (extracting bracketed code like "[247964]" -> "247964" and parens "(PIAZ 1258)" -> "PIAZ 1258")
       if (!productId) {
         const rawCode = String(item.partNumber || '').trim();
         const codeInBrackets = rawCode.match(/\[(.*?)\]/)?.[1]?.trim() || '';
-        const searchCodes = [rawCode];
-        if (codeInBrackets && codeInBrackets !== rawCode) searchCodes.push(codeInBrackets);
+        const codeInParens = rawCode.match(/\((PIAZ\s*\d+|[A-Za-z0-9_\-\.]{3,})\)/i)?.[1]?.trim() || '';
+        const piazMatch = rawCode.match(/\b(PIAZ\s*\d+)\b/i)?.[1]?.trim() || '';
+        const explicitProductCode = String(item.productCode || '').trim();
 
-        for (const c of searchCodes) {
-          if (!c) continue;
+        const searchCodes = [
+          explicitProductCode,
+          codeInBrackets,
+          codeInParens,
+          piazMatch,
+          rawCode
+        ].filter(c => c && c.length >= 2);
+
+        const uniqueCodes = Array.from(new Set(searchCodes));
+
+        for (const c of uniqueCodes) {
           try {
             const foundByCode = await executeKw('product.product', 'search_read', [
-              [['default_code', '=', c]]
-            ], { fields: ['id', 'name'], limit: 1 });
+              ['|', ['default_code', '=', c], ['default_code', 'ilike', c]]
+            ], { fields: ['id', 'name', 'default_code', 'uom_id'], limit: 1 });
             if (foundByCode && foundByCode.length > 0) {
               productId = foundByCode[0].id;
+              console.log(`[Odoo] Found product by default_code '${c}': ID ${productId} - ${foundByCode[0].name}`);
               break;
             }
           } catch {}
         }
       }
 
-      // 3. Search by name / description
+      // 3. Search by name / designation using PIEZA CAD / REFERENCIA (item.partNumber or item.productName)
       if (!productId) {
-        const rawName = String(item.productName || item.description || item.partNumber || '').trim();
-        const cleanName = rawName.replace(/\[.*?\]\s*/g, '').trim();
-        const searchNames = [cleanName, rawName].filter(n => n.length >= 3);
+        const rawName = String(item.productName || item.partNumber || '').trim();
+        const cleanName = rawName.replace(/\[.*?\]\s*/g, '').replace(/\(.*?\)\s*/g, '').trim();
+        const searchTerms = [cleanName, rawName].filter(n => n.length >= 3);
 
-        for (const n of searchNames) {
+        // Also extract key model strings like "UMI 40", "UCFL 206", "PASO 25", "PIAZ 1258"
+        const modelMatch = rawName.match(/\b([A-Z]{2,}\s*\d{2,}[A-Z\d\/-]*)\b/i);
+        if (modelMatch && modelMatch[1]) {
+          searchTerms.push(modelMatch[1].trim());
+        }
+
+        for (const term of searchTerms) {
           try {
             const foundByName = await executeKw('product.product', 'search_read', [
-              [['name', 'ilike', n]]
-            ], { fields: ['id', 'name'], limit: 1 });
+              ['|', ['name', 'ilike', term], ['default_code', 'ilike', term]]
+            ], { fields: ['id', 'name', 'default_code', 'uom_id'], limit: 1 });
             if (foundByName && foundByName.length > 0) {
               productId = foundByName[0].id;
+              console.log(`[Odoo] Found product by name/term '${term}': ID ${productId} - ${foundByName[0].name}`);
               break;
             }
           } catch {}
@@ -709,34 +749,26 @@ app.post('/api/odoo/create-purchase-requisition', async (req: Request, res: Resp
       if (!productId) {
         const rawCode = String(item.partNumber || '').trim();
         const codeInBrackets = rawCode.match(/\[(.*?)\]/)?.[1]?.trim() || '';
-        const defaultCodeToUse = codeInBrackets || rawCode;
-        const nameToUse = String(item.description || item.partNumber || 'Componente CAD').trim();
+        const codeInParens = rawCode.match(/\((PIAZ\s*\d+|[A-Za-z0-9_\-\.]{3,})\)/i)?.[1]?.trim() || '';
+        const defaultCodeToUse = item.productCode || codeInBrackets || codeInParens || rawCode;
+        const nameToUse = String(item.productName || item.partNumber || 'Componente Comercial CAD').trim();
 
         try {
           productId = await executeKw('product.product', 'create', [{
             default_code: defaultCodeToUse,
             name: nameToUse,
-            type: 'consu'
+            type: 'consu',
+            purchase_ok: true
           }]);
-          console.log(`[Odoo] Created new product.product ID ${productId} for '${nameToUse}'`);
+          console.log(`[Odoo] Created new product.product ID ${productId} for '${nameToUse}' [${defaultCodeToUse}]`);
         } catch (createProdErr: any) {
           console.warn(`[Odoo] Could not create product for ${item.partNumber}:`, createProdErr.message);
         }
       }
 
-      // 5. Ultimate fallback to any valid product in Odoo database to prevent FK constraint failure
+      // 5. If still not found, do NOT assign a random product! Report clearly in lineErrors
       if (!productId) {
-        try {
-          const anyProduct = await executeKw('product.product', 'search_read', [[]], { fields: ['id', 'name'], limit: 1 });
-          if (anyProduct && anyProduct.length > 0) {
-            productId = anyProduct[0].id;
-            console.log(`[Odoo] Using fallback existing product ID ${productId}`);
-          }
-        } catch {}
-      }
-
-      if (!productId) {
-        lineErrors.push(`${item.partNumber || item.description}: No se pudo resolver o crear un producto válido en Odoo.`);
+        lineErrors.push(`[${item.partNumber}]: No se encontró producto en Odoo con ese código o nombre, y no se pudo crear automáticamente.`);
         continue;
       }
 
@@ -783,7 +815,7 @@ app.post('/api/odoo/create-purchase-requisition', async (req: Request, res: Resp
         }
       }
 
-      const desc = String(item.productName || item.description || item.partNumber || 'Componente CAD').trim();
+      const desc = String(item.productName || item.partNumber || 'Componente Comercial').trim();
       if ('name' in lineFields || targetModel === 'purchase.request') {
         linePayload.name = desc;
       }
@@ -876,13 +908,26 @@ app.post('/api/odoo/create-purchase-requisition', async (req: Request, res: Resp
 
 // Search products in Odoo or catalog cache
 app.post('/api/odoo/products/search', async (req: Request, res: Response) => {
-  const { query = '', url, db, login, apiKey, limit = 25 } = req.body;
-  const cleanQ = String(query || '').trim().toLowerCase();
+  const { query = '', url, db, login, apiKey, limit = 50 } = req.body;
+  const rawQ = String(query || '').trim();
+  const cleanQ = rawQ.toLowerCase();
+
+  // Extract bracket code like [247964] -> "247964"
+  const bracketCode = (rawQ.match(/\[(.*?)\]/)?.[1] || '').trim().toLowerCase();
+  // Extract paren code like (PIAZ 1258) -> "PIAZ 1258"
+  const parenCode = (rawQ.match(/\((PIAZ\s*\d+|[A-Z0-9\-_]{3,})\)/i)?.[1] || '').trim().toLowerCase();
+  // Clean description string without bracket or parentheses
+  const cleanText = rawQ.replace(/\[.*?\]/g, '').replace(/\(.*?\)/g, '').trim().toLowerCase();
+
+  const useUrl = url || savedOdooAuth.url || 'https://deblasi.adhoc.ar';
+  const useDb = db || savedOdooAuth.db || '';
+  const useLogin = login || savedOdooAuth.login || '';
+  const useApiKey = apiKey || savedOdooAuth.apiKey || '';
 
   // 1. If credentials provided, attempt live search in Odoo
-  if (url && db && login && apiKey) {
+  if (useUrl && useDb && useLogin && useApiKey) {
     try {
-      let cleanUrl = url.trim().replace(/\/+$/, '').replace(/\/(odoo|web)$/i, '');
+      let cleanUrl = useUrl.trim().replace(/\/+$/, '').replace(/\/(odoo|web)$/i, '');
       const jsonRpcUrl = `${cleanUrl}/jsonrpc`;
       
       const authRes = await fetch(jsonRpcUrl, {
@@ -891,7 +936,7 @@ app.post('/api/odoo/products/search', async (req: Request, res: Response) => {
         body: JSON.stringify({
           jsonrpc: '2.0',
           method: 'call',
-          params: { service: 'common', method: 'authenticate', args: [db.trim(), login.trim(), apiKey.trim(), {}] },
+          params: { service: 'common', method: 'authenticate', args: [useDb.trim(), useLogin.trim(), useApiKey.trim(), {}] },
           id: 1
         })
       });
@@ -900,9 +945,13 @@ app.post('/api/odoo/products/search', async (req: Request, res: Response) => {
       const uid = authJson?.result;
 
       if (uid) {
-        const domain = cleanQ
-          ? ['|', ['name', 'ilike', cleanQ], ['default_code', 'ilike', cleanQ]]
-          : [];
+        let domain: any[] = [];
+        if (bracketCode || parenCode) {
+          const codeToFind = bracketCode || parenCode;
+          domain = ['|', '|', ['default_code', 'ilike', codeToFind], ['name', 'ilike', codeToFind], ['name', 'ilike', cleanText || cleanQ]];
+        } else if (cleanQ) {
+          domain = ['|', ['name', 'ilike', cleanQ], ['default_code', 'ilike', cleanQ]];
+        }
 
         const searchRes = await fetch(jsonRpcUrl, {
           method: 'POST',
@@ -913,7 +962,7 @@ app.post('/api/odoo/products/search', async (req: Request, res: Response) => {
             params: {
               service: 'object',
               method: 'execute_kw',
-              args: [db.trim(), uid, apiKey.trim(), 'product.product', 'search_read', [domain], {
+              args: [useDb.trim(), uid, useApiKey.trim(), 'product.product', 'search_read', [domain], {
                 fields: ['id', 'name', 'default_code', 'qty_available', 'uom_id', 'standard_price'],
                 limit
               }]
@@ -925,17 +974,29 @@ app.post('/api/odoo/products/search', async (req: Request, res: Response) => {
         const searchJson = JSON.parse(searchText);
 
         if (Array.isArray(searchJson?.result)) {
+          const liveProducts = searchJson.result.map((p: any) => ({
+            id: p.id,
+            default_code: p.default_code || '',
+            name: p.name || '',
+            qty_available: p.qty_available || 0,
+            uom_id: Array.isArray(p.uom_id) ? p.uom_id[1] : (p.uom_id || 'Unidades'),
+            standard_price: p.standard_price || 0
+          }));
+
+          // Merge live products into mockState.odooProducts cache
+          for (const lp of liveProducts) {
+            const idx = mockState.odooProducts.findIndex(cp => cp.id === lp.id);
+            if (idx >= 0) {
+              mockState.odooProducts[idx] = { ...mockState.odooProducts[idx], ...lp };
+            } else {
+              mockState.odooProducts.push(lp);
+            }
+          }
+
           return res.json({
             success: true,
             source: 'odoo_live',
-            products: searchJson.result.map((p: any) => ({
-              id: p.id,
-              default_code: p.default_code || '',
-              name: p.name || '',
-              qty_available: p.qty_available || 0,
-              uom_id: Array.isArray(p.uom_id) ? p.uom_id[1] : (p.uom_id || 'Unidades'),
-              standard_price: p.standard_price || 0
-            }))
+            products: liveProducts
           });
         }
       }
@@ -944,13 +1005,25 @@ app.post('/api/odoo/products/search', async (req: Request, res: Response) => {
     }
   }
 
-  // 2. Search local products database
+  // 2. Search local products database using exact code, bracket/paren code, or tokens
+  const tokens = cleanQ.split(/\s+/).filter(t => t.length > 2);
   const matches = mockState.odooProducts.filter(p => {
     if (!cleanQ) return true;
-    return (
-      (p.default_code && p.default_code.toLowerCase().includes(cleanQ)) ||
-      (p.name && p.name.toLowerCase().includes(cleanQ))
-    );
+    const pCode = String(p.default_code || '').toLowerCase();
+    const pName = String(p.name || '').toLowerCase();
+
+    // Direct code matches
+    if (bracketCode && (pCode === bracketCode || pCode.includes(bracketCode))) return true;
+    if (parenCode && (pCode === parenCode || pCode.includes(parenCode))) return true;
+    if (pCode && (pCode === cleanQ || pCode.includes(cleanQ) || cleanQ.includes(pCode))) return true;
+
+    // Direct name match
+    if (pName.includes(cleanQ)) return true;
+
+    // Token match: if at least 1 token matches
+    if (tokens.length > 0 && tokens.some(t => pName.includes(t) || pCode.includes(t))) return true;
+
+    return false;
   });
 
   return res.json({
@@ -993,13 +1066,13 @@ app.post('/api/inventor/import-session', (req: Request, res: Response) => {
     return res.status(400).json({ success: false, error: 'Faltan datos de la pieza o ensamble de Inventor.' });
   }
 
-  const pNum = partNumber || 'SEPARADOR DE SOLIDOS';
-  const aName = assemblyName || pNum || 'SEPARADOR DE SOLIDOS_R4.iam (ANTIGUO)';
-  const proj = project || 'OT-26282';
-  const sNum = stockNumber || 'OT-26282.04';
-  const des = designer || author || 'FL';
-  const vend = vendor || 'FINCA BONI';
-  const loc = location || fullFileName || 'D:\\PROYECTOS\\OT-24019 - D.606.B V2\\01 - DIBUJOS\\MODIFICACIONES\\SEPARADOR ESTATICO\\SEPARADOR DE SOLIDOS_R4.iam';
+  const pNum = partNumber || assemblyName || 'ENSAMBLAJE';
+  const aName = assemblyName || pNum || 'Ensamblaje Inventor';
+  const proj = project || '';
+  const sNum = stockNumber || '';
+  const des = designer || author || '';
+  const vend = vendor || '';
+  const loc = location || fullFileName || '';
 
   const sessionId = `inv-${Date.now().toString(36)}`;
   const sessionData = {
@@ -1010,10 +1083,10 @@ app.post('/api/inventor/import-session', (req: Request, res: Response) => {
     fileType: 'iam' as const,
     revision: revision || 'Rev. 1',
     author: des,
-    material: material || 'Acero / Normalizados',
-    mass: Number(mass) || 87.37,
-    volume: Number(volume) || 72308.84,
-    dimensions: dimensions || '875,2mm x 519,2mm x 435mm',
+    material: material || '',
+    mass: Number(mass) || 0,
+    volume: Number(volume) || 0,
+    dimensions: dimensions || '',
     odooProductId: 'NEW',
     syncStatus: 'pending' as const,
     lastSync: 'Recién importado de Inventor',
@@ -1022,9 +1095,9 @@ app.post('/api/inventor/import-session', (req: Request, res: Response) => {
       Subject: proj,
       Company: vend,
       Manager: des,
-      CostCenter: 'CC-ING-01',
+      CostCenter: '',
       StandardCost: 0,
-      StockLocation: 'WH/Stock',
+      StockLocation: '',
       PartNumber: pNum,
       StockNumber: sNum,
       Project: proj,
@@ -1098,184 +1171,98 @@ app.get('/api/inventor/latest', (_req: Request, res: Response) => {
   });
 });
 
-// Mock / Sample CAD & ERP synchronized database
-const cintaTransferenciaFlamarique = {
-  partNumber: 'D-659.00',
-  name: 'CINTA DE TRANSFERENCIA 3 - OT-26148 - FLAMARIQUE',
-  fileType: 'iam' as const,
-  revision: 'Rev. 3',
-  author: 'flucero (Autodesk Inventor 2027)',
-  material: 'Acero Inoxidable AISI 304 / UHMW-PE / SAE 1045',
-  mass: 142.6,
-  volume: 18240.5,
-  dimensions: '3450mm x 480mm x 380mm',
-  odooProductId: '1048',
-  syncStatus: 'pending' as 'synced' | 'modified' | 'pending',
-  lastSync: 'Recién cargado desde Inventor',
-  iProperties: {
-    Title: 'CINTA DE TRANSFERENCIA 3',
-    Subject: 'OT-26148 - Línea de Envasado / Transporte Modular',
-    Company: 'Deblasi Soluciones Industriales',
-    Manager: 'Ingeniería Mecánica',
-    CostCenter: 'CC-ING-26148',
-    StandardCost: 3850.00,
-    StockLocation: 'WH/Stock/Montaje'
+// CAD & ERP synchronized state
+const initialOdooCatalog = [
+  {
+    id: 1055,
+    default_code: '247964',
+    name: '[247964] MOTORREDUCTOR - (ALTERNATIVO) UMI 40 - REL. 1:20 - 0,25 HP (0,187 KW) - 4 POLOS - BRIDA C63/B14 - C/BRAZO REACCION',
+    qty_available: 2,
+    uom_id: 'Unidades',
+    standard_price: 185000
   },
-  bom: [
-    { id: '1', item: '1', partNumber: 'D-659.01.03', description: 'COSTILLA CAJÓN (Chapa plegada 2.5mm)', qty: 6, uom: 'Unidades', material: 'AISI 304', odooId: 'PROD-659-01', status: 'pending' as const, isCom: false },
-    { id: '2', item: '2', partNumber: 'ANCLAJE A MENSULA', description: 'Soporte y anclaje a ménsula estructural', qty: 4, uom: 'Unidades', material: 'AISI 304', odooId: 'PROD-659-02', status: 'pending' as const, isCom: false },
-    { id: '3', item: '3', partNumber: 'CAJON MANDO', description: 'Subensamblaje Cajón de Mando y Transmisión', qty: 1, uom: 'Unidades', material: 'AISI 304', odooId: 'PROD-659-03', status: 'pending' as const, isCom: false },
-    { id: '4', item: '4', partNumber: 'D-659.01.04', description: 'TRAVESANO COSTILLAS (Perfil conformación)', qty: 3, uom: 'Unidades', material: 'AISI 304', odooId: 'PROD-659-04', status: 'pending' as const, isCom: false },
-    { id: '5', item: '5', partNumber: 'MOTORREDUCTOR STM - UMI 50:1', description: 'Motorreductor a sinfín y corona STM UMI 50 i=50 0.75kW', qty: 1, uom: 'Unidades', material: 'Normalizado', odooId: 'PROD-MOT-50', status: 'pending' as const, isCom: true },
-    { id: '6', item: '6', partNumber: 'D-659.01.05', description: 'TAPA FRONTAL (Protección módulo motriz)', qty: 1, uom: 'Unidades', material: 'AISI 304', odooId: 'PROD-659-05', status: 'pending' as const, isCom: false },
-    { id: '7', item: '7', partNumber: 'D-659.01.06', description: 'EJE MANDO (Eje motriz maquinado Ø30mm)', qty: 1, uom: 'Unidades', material: 'SAE 1045', odooId: 'PROD-659-06', status: 'pending' as const, isCom: false },
-    { id: '8', item: '8', partNumber: 'COMERCIAL - ADAPTADOR 25-38', description: 'Adaptador comercial de acoplamiento 25-38mm', qty: 2, uom: 'Unidades', material: 'Acero SAE 1045', odooId: 'PROD-659-08', status: 'pending' as const, isCom: true },
-    { id: '9', item: '9', partNumber: 'RUEDA DENTADA Z 12 - PASO 25', description: 'Rueda dentada de tracción Z12 paso 25mm para malla modular', qty: 2, uom: 'Unidades', material: 'Poliamida PA6', odooId: 'PROD-659-09', status: 'pending' as const, isCom: true },
-    { id: '10', item: '10', partNumber: 'ISO 4017 - M10 x 25 - ISO - 25431', description: 'Tornillo hexagonal M10x25 ISO 4017 acero inox', qty: 12, uom: 'Unidades', material: 'Inox A2-70', odooId: 'PROD-TORN-M10', status: 'pending' as const, isCom: true },
-    { id: '11', item: '11', partNumber: 'PLATINA REDUCTOR', description: 'Platina soporte y fijación de reductor UMI 50', qty: 2, uom: 'Unidades', material: 'AISI 304', odooId: 'PROD-659-11', status: 'pending' as const, isCom: false },
-    { id: '12', item: '12', partNumber: 'PORTA RODAMIENTO', description: 'Soporte y caja porta rodamiento autoalineable UCFL 206', qty: 2, uom: 'Unidades', material: 'Fundición / Inox', odooId: 'PROD-ROD-206', status: 'pending' as const, isCom: true },
-    { id: '13', item: '13', partNumber: 'D-659.02.08', description: 'Ensamble EJE RETORNO (Conjunto tensor y retorno)', qty: 1, uom: 'Unidades', material: 'AISI 304 / SAE 1045', odooId: 'PROD-659-13', status: 'pending' as const, isCom: false },
-    { id: '14', item: '14', partNumber: 'D-659.01.02', description: 'BABETA MÓDULO MANDO (Guía de entrada / transición)', qty: 1, uom: 'Unidades', material: 'UHMW-PE Verde', odooId: 'PROD-659-14', status: 'pending' as const, isCom: false },
-    { id: '15', item: '15', partNumber: 'D-659.02.06', description: 'TENSOR RESORTE (Mecanismo de tensión automática)', qty: 2, uom: 'Unidades', material: 'Acero templado / AISI 304', odooId: 'PROD-659-15', status: 'pending' as const, isCom: true },
-    { id: '16', item: '16', partNumber: 'MALLA MODULAR PASO 25', description: 'Banda transportadora modular plástica paso 25mm Ancho=400mm', qty: 1, uom: 'Metros', material: 'Polipropileno FDA', odooId: 'PROD-MALLA-25', status: 'pending' as const, isCom: true },
-    { id: '17', item: '17', partNumber: 'D-659.02.01', description: 'EJE RETORNO TENSOR Ø25mm (Mecanizado libre)', qty: 1, uom: 'Unidades', material: 'SAE 1045', odooId: 'PROD-659-17', status: 'pending' as const, isCom: false },
-    { id: '18', item: '18', partNumber: 'D-659.02.02', description: 'RODILLO GUÍA RETORNO Ø80mm', qty: 2, uom: 'Unidades', material: 'Poliamida PA6', odooId: 'PROD-659-18', status: 'pending' as const, isCom: true },
-    { id: '19', item: '19', partNumber: 'ROD-6205-2RS', description: 'Rodamiento rígido de bolas SKF 6205-2RS', qty: 4, uom: 'Unidades', material: 'Normalizado', odooId: 'PROD-109', status: 'pending' as const, isCom: true },
-    { id: '20', item: '20', partNumber: 'PERFIL GUIA DESLIZANTE UHMW', description: 'Perfil guía de desgaste bajo malla modular L=3000mm', qty: 4, uom: 'Unidades', material: 'UHMW-PE Verde', odooId: 'PROD-GUIA-UHMW', status: 'pending' as const, isCom: true },
-    { id: '21', item: '21', partNumber: 'ISO 7089 - 10 - 200HV', description: 'Arandela plana DIN 125 M10 acero inoxidable', qty: 24, uom: 'Unidades', material: 'Inox A2', odooId: 'PROD-ARAN-M10', status: 'pending' as const, isCom: true },
-    { id: '22', item: '22', partNumber: 'PATA NIVELADORA ARTICULADA M16', description: 'Pie nivelador regulable M16 con rótula y base antideslizante', qty: 4, uom: 'Unidades', material: 'Poliamida / AISI 304', odooId: 'PROD-PATA-M16', status: 'pending' as const, isCom: true }
-  ]
-};
-
-const separadorSolidos = {
-  partNumber: 'SEPARADOR DE SOLIDOS',
-  name: 'SEPARADOR DE SOLIDOS_R4.iam (ANTIGUO)',
-  fileType: 'iam' as const,
-  revision: 'Rev. 1',
-  author: 'VDB',
-  material: 'Acero / Normalizados',
-  mass: 87.37,
-  volume: 72308.84,
-  dimensions: '875,2mm x 519,2mm x 435mm',
-  odooProductId: '1060',
-  syncStatus: 'pending' as 'synced' | 'modified' | 'pending',
-  lastSync: 'Recién cargado desde Autodesk Inventor',
-  iProperties: {
-    Title: 'SEPARADOR DE SOLIDOS_R4.iam (ANTIGUO)',
-    Subject: 'OT-26282',
-    Company: 'FINCA BONI',
-    Manager: 'FL',
-    CostCenter: 'CC-ING-01',
-    StandardCost: 0.00,
-    StockLocation: 'WH/Stock',
-    PartNumber: 'SEPARADOR DE SOLIDOS',
-    StockNumber: 'OT-26282.04',
-    Project: 'OT-26282',
-    Designer: 'FL',
-    Vendor: 'FINCA BONI',
-    Location: 'D:\\PROYECTOS\\OT-24019 - D.606.B V2\\01 - DIBUJOS\\MODIFICACIONES\\SEPARADOR ESTATICO\\SEPARADOR DE SOLIDOS_R4.iam'
+  {
+    id: 1056,
+    default_code: 'PIAZ 1258',
+    name: 'PORTA RODAMIENTO BRIDA 4 AGUJEROS EJE Ø 20 - SIN TAPA (PIAZ 1258)',
+    qty_available: 6,
+    uom_id: 'Unidades',
+    standard_price: 32000
   },
-  bom: [
-    {
-      id: '1',
-      item: '1',
-      partNumber: '[247964] MOTORREDUCTOR - (ALTERNATIVO) UMI 40 - REL. 1:20 - 0,25 HP (0,187 KW) - 4 POLOS - BRIDA C63/B14 - C/BRAZO REACCION',
-      description: 'WI – WMI-Worm gearboxes IMPORT WI-WMI',
-      qty: 1,
-      uom: 'Unidades',
-      material: 'Acero / Normalizado',
-      odooId: '1055',
-      status: 'pending' as const,
-      isCom: true
-    },
-    {
-      id: '2',
-      item: '2',
-      partNumber: 'PORTA RODAMIENTO BRIDA 4 AGUJEROS EJE Ø 20 - SIN TAPA (PIAZ 1258)',
-      description: 'C.P.R 4 Agujeros Serie UCF FINAL V4',
-      qty: 2,
-      uom: 'Unidades',
-      material: 'AISI 304',
-      odooId: '1056',
-      status: 'pending' as const,
-      isCom: true
-    },
-    {
-      id: '3',
-      item: '3',
-      partNumber: 'TAMBOR SEPARADOR NORMALIZADO',
-      description: 'Tambor separador estático con paletas helicoidales de acero inox',
-      qty: 1,
-      uom: 'Unidades',
-      material: 'AISI 304',
-      odooId: '1057',
-      status: 'pending' as const,
-      isCom: false
-    },
-    {
-      id: '4',
-      item: '4',
-      partNumber: 'TAMBOR RANURADO CHAPA 1.2mm AISI 304 2B',
-      description: 'Malla cilíndrica ranurada perforada paso 1.2mm',
-      qty: 1,
-      uom: 'Unidades',
-      material: 'AISI 304 2B',
-      odooId: '1058',
-      status: 'pending' as const,
-      isCom: false
-    },
-    {
-      id: '5',
-      item: '5',
-      partNumber: 'CUERPO SEPARADOR DE SOLIDOS AISI 304',
-      description: 'Tolva colectora superior y envolvente estructural',
-      qty: 1,
-      uom: 'Unidades',
-      material: 'AISI 304',
-      odooId: '1060',
-      status: 'pending' as const,
-      isCom: false
-    },
-    {
-      id: '6',
-      item: '6',
-      partNumber: 'SOSTEN DE RODAMIENTO CHAPA 3mm AISI 304',
-      description: 'Placa soporte y anclaje para rodamientos UCF 20',
-      qty: 2,
-      uom: 'Unidades',
-      material: 'AISI 304',
-      odooId: '1059',
-      status: 'pending' as const,
-      isCom: false
-    },
-    {
-      id: '7',
-      item: '7',
-      partNumber: 'PLATINA TAMBOR CHAPA 3mm AISI 304',
-      description: 'Platina frontal brida ciega de cierre',
-      qty: 2,
-      uom: 'Unidades',
-      material: 'AISI 304',
-      odooId: '1061',
-      status: 'pending' as const,
-      isCom: false
-    },
-    {
-      id: '8',
-      item: '8',
-      partNumber: 'PUNTERA MANDO REDONDO TREFILADO 25mm AISI 304',
-      description: 'Eje de acople motriz mecanizado con chavetero',
-      qty: 1,
-      uom: 'Unidades',
-      material: 'AISI 304',
-      odooId: '1062',
-      status: 'pending' as const,
-      isCom: false
-    }
-  ]
-};
+  {
+    id: 1057,
+    default_code: 'PROD-MOT-50',
+    name: 'MOTORREDUCTOR A SINFÍN Y CORONA STM UMI 50 i=50 0.75kW',
+    qty_available: 3,
+    uom_id: 'Unidades',
+    standard_price: 245000
+  },
+  {
+    id: 1058,
+    default_code: 'PROD-ROD-206',
+    name: 'SOPORTE Y CAJA PORTA RODAMIENTO AUTOALINEABLE UCFL 206',
+    qty_available: 8,
+    uom_id: 'Unidades',
+    standard_price: 28500
+  },
+  {
+    id: 1059,
+    default_code: 'PROD-MALLA-25',
+    name: 'BANDA / MALLA MODULAR PLÁSTICA PASO 25mm PP AZUL',
+    qty_available: 15,
+    uom_id: 'Metros',
+    standard_price: 42000
+  },
+  {
+    id: 1060,
+    default_code: 'PROD-TORN-M10',
+    name: 'TORNILLO CABEZA HEXAGONAL M10 x 25 ACERO INOXIDABLE AISI 304 (ISO 4017)',
+    qty_available: 140,
+    uom_id: 'Unidades',
+    standard_price: 480
+  },
+  {
+    id: 1061,
+    default_code: 'PROD-659-08',
+    name: 'COMERCIAL - ADAPTADOR DE ACOPLAMIENTO 25-38mm',
+    qty_available: 4,
+    uom_id: 'Unidades',
+    standard_price: 18900
+  },
+  {
+    id: 1062,
+    default_code: 'PROD-659-09',
+    name: 'RUEDA DENTADA DE TRACCIÓN Z12 PASO 25mm PA6',
+    qty_available: 12,
+    uom_id: 'Unidades',
+    standard_price: 15400
+  },
+  {
+    id: 1063,
+    default_code: 'TAMBOR SEPARADOR',
+    name: 'TAMBOR SEPARADOR DE SÓLIDOS MAQUINADO',
+    qty_available: 1,
+    uom_id: 'Unidades',
+    standard_price: 95000
+  },
+  {
+    id: 1064,
+    default_code: 'BRAZO ANTIGIRO',
+    name: 'BRAZO ANTIGIRO Y RETENCIÓN DE TORQUE',
+    qty_available: 2,
+    uom_id: 'Unidades',
+    standard_price: 14200
+  },
+  {
+    id: 1065,
+    default_code: 'CUBRE REMACHADO',
+    name: 'CUBRE REMACHADO PROTECCIÓN INOX',
+    qty_available: 4,
+    uom_id: 'Unidades',
+    standard_price: 18600
+  }
+];
 
-// Mock / Sample CAD & ERP synchronized database
 const mockState: {
   activePart: any | null;
   presets: any[];
@@ -1283,85 +1270,11 @@ const mockState: {
   syncLogs: any[];
   purchaseRequisitions: any[];
 } = {
-  activePart: separadorSolidos, // Default: SEPARADOR DE SOLIDOS desde Inventor
-  purchaseRequisitions: [
-    {
-      id: 1,
-      name: 'PR00170',
-      origin: 'OT-26282 - SEPARADOR DE SOLIDOS',
-      state: 'draft',
-      ordering_date: '2026-10-26',
-      schedule_date: '2026-11-14',
-      timestamp: '2026-10-26 16:30:00',
-      notes: 'OT-26282.04',
-      simulated: false,
-      lines: [
-        { id: 1, partNumber: '[247964] MOTORREDUCTOR - (ALTERNATIVO) UMI 40 - REL. 1:20 - 0,25 HP (0,187 KW) - 4 POLOS - BRIDA C63/B14 - C/BRAZO REACCION', description: 'WI – WMI-Worm gearboxes IMPORT WI-WMI', qty: 1, uom: 'Unidades', isCom: true },
-        { id: 2, partNumber: 'PORTA RODAMIENTO BRIDA 4 AGUJEROS EJE Ø 20 - SIN TAPA (PIAZ 1258)', description: 'C.P.R 4 Agujeros Serie UCF FINAL V4', qty: 2, uom: 'Unidades', isCom: true }
-      ]
-    }
-  ],
-  presets: [
-    { id: 'separador', label: 'SEPARADOR DE SOLIDOS_R4.iam (ANTIGUO) - OT-26282 - FINCA BONI (33 piezas)', data: separadorSolidos },
-    { id: 'flamarique', label: 'D-659.00 - CINTA DE TRANSFERENCIA 3 - OT-26148 - FLAMARIQUE (22 piezas)', data: cintaTransferenciaFlamarique },
-    { 
-      id: 'reductor', 
-      label: 'INV-2027-ASM01 - Reductor Planetario Helicoidal v3',
-      data: {
-        partNumber: 'INV-2027-ASM01',
-        name: 'Reductor Planetario Helicoidal v3',
-        fileType: 'iam' as const,
-        revision: 'C.2',
-        author: 'Franco Lucero (Inventor 2027)',
-        material: 'Acero SAE 4140 templado / Aluminio 7075-T6',
-        mass: 14.85,
-        volume: 1890.4,
-        dimensions: '220mm x 180mm x 150mm',
-        odooProductId: '1048',
-        syncStatus: 'synced' as const,
-        lastSync: '2026-10-14 09:15',
-        iProperties: {
-          Title: 'Reductor Planetario Helicoidal',
-          Subject: 'Mecanismo de Transmisión de Potencia',
-          Company: 'Deblasi Soluciones Industriales',
-          Manager: 'Ingeniería Mecánica',
-          CostCenter: 'CC-MEC-400',
-          StandardCost: 450.00,
-          StockLocation: 'WH/Stock/Mecanizados'
-        },
-        bom: [
-          { id: '1', item: '1', partNumber: 'CARC-AL7075-01', description: 'Carcasa Principal Bipartida', qty: 1, uom: 'Unidades', material: 'Aluminio 7075', odooId: 'PROD-401', status: 'synced' as const },
-          { id: '2', item: '2', partNumber: 'ENG-SOL-01', description: 'Engranaje Solar Helicoidal Z=18 M=2.5', qty: 1, uom: 'Unidades', material: 'SAE 4140', odooId: 'PROD-402', status: 'synced' as const },
-          { id: '3', item: '3', partNumber: 'ENG-PLAN-01', description: 'Satélites Planetarios Z=36 (Juego x3)', qty: 3, uom: 'Unidades', material: 'SAE 8620', odooId: 'PROD-403', status: 'synced' as const },
-          { id: '4', item: '4', partNumber: 'CORONA-INT-01', description: 'Corona Dentada Interior Z=90', qty: 1, uom: 'Unidades', material: 'SAE 4140', odooId: 'PROD-404', status: 'synced' as const },
-          { id: '5', item: '5', partNumber: 'ROD-6205-2RS', description: 'Rodamiento Rígido de Bolas SKF 6205-2RS', qty: 4, uom: 'Unidades', material: 'Normalizado', odooId: 'PROD-109', status: 'synced' as const },
-          { id: '6', item: '6', partNumber: 'RET-30-52-7', description: 'Retén de Doble Labio NBR 30x52x7', qty: 2, uom: 'Unidades', material: 'Polímero NBR', odooId: 'PROD-312', status: 'synced' as const },
-          { id: '7', item: '7', partNumber: 'BUL-M8X35-88', description: 'Bulón Allen Cilíndrico DIN 912 M8x35 Cl. 8.8', qty: 8, uom: 'Unidades', material: 'Acero Cincado', odooId: 'PROD-088', status: 'synced' as const }
-        ]
-      }
-    }
-  ],
-  odooProducts: [
-    { id: 1048, default_code: 'D-659.00', name: 'CINTA DE TRANSFERENCIA 3 - OT-26148 - FLAMARIQUE', list_price: 6500.00, standard_price: 3850.00, qty_available: 1, uom_id: 'Unidades', type: 'product', bom_count: 1 },
-    { id: 1049, default_code: 'D-659.01.03', name: 'COSTILLA CAJÓN (Chapa plegada 2.5mm)', list_price: 85.00, standard_price: 38.00, qty_available: 18, uom_id: 'Unidades', type: 'consu', bom_count: 0 },
-    { id: 1050, default_code: 'MOTORREDUCTOR STM - UMI 50:1', name: 'Motorreductor STM UMI 50 i=50 0.75kW', list_price: 680.00, standard_price: 490.00, qty_available: 3, uom_id: 'Unidades', type: 'product', bom_count: 0 },
-    { id: 1051, default_code: 'RUEDA DENTADA Z 12 - PASO 25', name: 'Rueda dentada de tracción Z12 paso 25mm', list_price: 45.00, standard_price: 22.00, qty_available: 8, uom_id: 'Unidades', type: 'product', bom_count: 0 },
-    { id: 1052, default_code: 'ISO 4017 - M10 x 25 - ISO - 25431', name: 'Tornillo hexagonal M10x25 ISO 4017 A2 Inox', list_price: 2.50, standard_price: 0.90, qty_available: 300, uom_id: 'Unidades', type: 'consu', bom_count: 0 },
-    { id: 1053, default_code: 'D-659.01.06', name: 'EJE MANDO (Mecanizado Ø30mm)', list_price: 185.00, standard_price: 92.00, qty_available: 2, uom_id: 'Unidades', type: 'consu', bom_count: 0 },
-    { id: 1054, default_code: 'D-659.02.08', name: 'Ensamble EJE RETORNO', list_price: 340.00, standard_price: 180.00, qty_available: 2, uom_id: 'Unidades', type: 'product', bom_count: 0 },
-    { id: 1055, default_code: '247964', name: '[247964] MOTORREDUCTOR - (ALTERNATIVO) UMI 40 - REL. 1:20 - 0,25 HP (0,187 KW) - 4 POLOS - BRIDA C63/B14 - C/BRAZO REACCION', list_price: 620.00, standard_price: 430.00, qty_available: 2, uom_id: 'Unidades', type: 'product', bom_count: 0 },
-    { id: 1056, default_code: 'PIAZ 1258', name: 'PORTA RODAMIENTO BRIDA 4 AGUJEROS EJE Ø 20 - SIN TAPA (PIAZ 1258)', list_price: 95.00, standard_price: 52.00, qty_available: 6, uom_id: 'Unidades', type: 'product', bom_count: 0 },
-    { id: 1057, default_code: 'PROD-105', name: 'TAMBOR SEPARADOR NORMALIZADO', list_price: 320.00, standard_price: 180.00, qty_available: 2, uom_id: 'Unidades', type: 'product', bom_count: 0 },
-    { id: 1058, default_code: '24024', name: 'TAMBOR RANURADO CHAPA 1.2mm AISI 304 2B', list_price: 280.00, standard_price: 155.00, qty_available: 1, uom_id: 'Unidades', type: 'product', bom_count: 0 },
-    { id: 1059, default_code: 'PROD-103', name: 'SOSTEN DE RODAMIENTO CHAPA 3mm AISI 304', list_price: 75.00, standard_price: 35.00, qty_available: 4, uom_id: 'Unidades', type: 'consu', bom_count: 0 },
-    { id: 1060, default_code: 'PROD-101', name: 'CUERPO SEPARADOR DE SOLIDOS AISI 304', list_price: 1250.00, standard_price: 780.00, qty_available: 1, uom_id: 'Unidades', type: 'product', bom_count: 1 },
-    { id: 1061, default_code: 'PROD-107', name: 'PLATINA TAMBOR CHAPA 3mm AISI 304', list_price: 45.00, standard_price: 22.00, qty_available: 8, uom_id: 'Unidades', type: 'consu', bom_count: 0 },
-    { id: 1062, default_code: 'PROD-108', name: 'PUNTERA MANDO REDONDO TREFILADO 25mm AISI 304', list_price: 68.00, standard_price: 32.00, qty_available: 3, uom_id: 'Unidades', type: 'consu', bom_count: 0 }
-  ],
-  syncLogs: [
-    { id: 1, timestamp: '2026-10-14 12:44:00', action: 'INVENTOR_BRIDGE', target: 'D-659.00 (.iam)', status: 'OK', details: 'Estructura de ensamble lista para transferencia: CINTA DE TRANSFERENCIA 3 - OT-26148 - FLAMARIQUE (16 líneas).' },
-    { id: 2, timestamp: '2026-10-14 12:40:05', action: 'JSONRPC_TEST', target: 'https://deblasi.adhoc.ar/odoo/jsonrpc', status: 'OK', details: 'Conexión verificada: Odoo Server common.version responded successfully.' }
-  ]
+  activePart: null, // Sin ensamblaje predeterminado: solo datos reales transmitidos desde Autodesk Inventor
+  purchaseRequisitions: [],
+  presets: [],
+  odooProducts: [...initialOdooCatalog],
+  syncLogs: []
 };
 
 app.post('/api/inventor/load-preset', (req: Request, res: Response) => {

@@ -19,59 +19,13 @@ Public Class InventorWebBridge
 
 
     ''' <summary>
-    ''' Obtiene la URL configurada para la WebApp:
-    ''' 1. Detecta si localhost:3000 está activo en la PC
-    ''' 2. Variable de entorno ODOO_INVENTOR_WEBAPP_URL
-    ''' 3. Archivo C:\OdooInventor\config.ini o InventorWebBridge.ini
-    ''' 4. Servidor en la nube ais-dev por defecto (sin 404)
+    ''' Dirección única y determinista de la WebApp local.
+    ''' Conecta exclusivamente a http://localhost:3000. No busca .ini ni variables de entorno.
     ''' </summary>
+    Public Const LocalhostUrl As String = "http://localhost:3000"
+
     Public Shared Function GetConfiguredWebAppUrl() As String
-
-        ' 1. Detectar si el servidor local está activo en http://localhost:3000
-        Try
-                Using client As New HttpClient()
-                    client.Timeout = TimeSpan.FromMilliseconds(450)
-                    Dim resp = client.GetAsync("http://localhost:3000/api/odoo/state").Result
-                    If resp.IsSuccessStatusCode Then
-                        Return "http://localhost:3000"
-                    End If
-                End Using
-            Catch
-            End Try
-
-            ' 2. Variable de entorno si está definida
-            Dim envUrl As String = System.Environment.GetEnvironmentVariable("ODOO_INVENTOR_WEBAPP_URL")
-            If Not String.IsNullOrWhiteSpace(envUrl) Then
-                Return envUrl.Trim()
-            End If
-
-            ' 3. Archivo de configuración en la carpeta del Add-In o en C:\OdooInventor\config.ini
-            Dim addinDir As String = System.IO.Path.GetDirectoryName(Assembly.GetExecutingAssembly().Location)
-            Dim localIni As String = System.IO.Path.Combine(addinDir, "InventorWebBridge.ini")
-            If System.IO.File.Exists(localIni) Then
-                Dim lines = System.IO.File.ReadAllLines(localIni)
-                For Each line In lines
-                    Dim trimmed = line.Trim()
-                    If trimmed.StartsWith("URL=", StringComparison.OrdinalIgnoreCase) Then
-                        Dim val = trimmed.Substring(4).Trim()
-                        If Not String.IsNullOrWhiteSpace(val) Then Return val
-                    End If
-                Next
-            End If
-
-            ' 4. Carpeta global C:\OdooInventor\config.ini
-            Dim globalIni As String = "C:\OdooInventor\config.ini"
-            If System.IO.File.Exists(globalIni) Then
-                Dim lines = System.IO.File.ReadAllLines(globalIni)
-                For Each line In lines
-                    Dim trimmed = line.Trim()
-                    If trimmed.StartsWith("URL=", StringComparison.OrdinalIgnoreCase) Then
-                        Dim val = trimmed.Substring(4).Trim()
-                        If Not String.IsNullOrWhiteSpace(val) Then Return val
-                    End If
-                Next
-            End If
-        Return "http://localhost:3000"
+        Return LocalhostUrl
     End Function
 
     Public Shared Async Function AbrirEnWebAppAsync(
@@ -301,69 +255,69 @@ Public Class InventorWebBridge
             Catch
             End Try
 
-            ' 5. Preparar URL limpia de destino con payload incrustado (Garantía de apertura directa en navegador)
+            ' 5. Transmitir determinísticamente a la WebApp local en http://localhost:3000
+            Dim endpointUrl As String = "http://localhost:3000/api/inventor/import-session"
             Dim sessionId As String = ""
-            Dim compactPayloadJson As String = JsonSerializer.Serialize(payload)
-            Dim base64Compact As String = Convert.ToBase64String(Encoding.UTF8.GetBytes(compactPayloadJson))
-            Dim directUrlWithData As String = webAppBaseUrl.TrimEnd("/"c)
 
-            If base64Compact.Length < 7500 Then
-                directUrlWithData = String.Format("{0}/?import={1}", webAppBaseUrl.TrimEnd("/"c), Uri.EscapeDataString(base64Compact))
-            Else
-                directUrlWithData = String.Format("{0}/?view=bom", webAppBaseUrl.TrimEnd("/"c))
-            End If
-
-            Dim postSuccess As Boolean = False
-
-            ' 6. Intentar POST directo a la WebApp (API de sincronización en vivo)
             Try
                 Using http As New HttpClient()
-                    http.Timeout = TimeSpan.FromSeconds(6)
+                    http.Timeout = TimeSpan.FromSeconds(5)
                     Dim content As New StringContent(jsonPayload, Encoding.UTF8, "application/json")
-                    Dim endpointUrl As String = webAppBaseUrl.TrimEnd("/"c) & "/api/inventor/import-session"
                     Dim response As HttpResponseMessage = Await http.PostAsync(endpointUrl, content)
 
-                    If response.IsSuccessStatusCode Then
-                        postSuccess = True
-                        Dim respText As String = Await response.Content.ReadAsStringAsync()
-                        Using jsonDoc As JsonDocument = JsonDocument.Parse(respText)
-                            sessionId = jsonDoc.RootElement.GetProperty("sessionId").GetString()
-                            directUrlWithData = String.Format("{0}/?session={1}", webAppBaseUrl.TrimEnd("/"c), sessionId)
-                        End Using
+                    If Not response.IsSuccessStatusCode Then
+                        MessageBox.Show(
+                            "Error al transmitir LDM a la WebApp local:" & System.Environment.NewLine & System.Environment.NewLine &
+                            "El servidor en http://localhost:3000 respondió con código " & CInt(response.StatusCode) & " (" & response.ReasonPhrase & ")." & System.Environment.NewLine & System.Environment.NewLine &
+                            "No se abrirá el navegador para evitar estados inconsistentes.",
+                            "OdooInventor — Error HTTP en localhost:3000",
+                            MessageBoxButtons.OK,
+                            MessageBoxIcon.Error)
+                        Return
                     End If
+
+                    Dim respText As String = Await response.Content.ReadAsStringAsync()
+                    Using jsonDoc As JsonDocument = JsonDocument.Parse(respText)
+                        If jsonDoc.RootElement.TryGetProperty("sessionId", Nothing) Then
+                            sessionId = jsonDoc.RootElement.GetProperty("sessionId").GetString()
+                        End If
+                    End Using
                 End Using
-            Catch
+            Catch ex As Exception
+                ' Si localhost:3000 no responde, FALLAR DETERMINÍSTICAMENTE SIN ABRIR NINGÚN NAVEGADOR
+                MessageBox.Show(
+                    "No se pudo conectar con la WebApp local en http://localhost:3000." & System.Environment.NewLine & System.Environment.NewLine &
+                    "Asegurate de que el servidor esté iniciado en tu computadora ejecutando:" & System.Environment.NewLine &
+                    "  npm run dev" & System.Environment.NewLine & System.Environment.NewLine &
+                    "Detalle del error:" & System.Environment.NewLine &
+                    ex.Message,
+                    "OdooInventor — Servidor Local No Encontrado",
+                    MessageBoxButtons.OK,
+                    MessageBoxIcon.Error)
+                Return
             End Try
 
-            ' 7. Informar al usuario en Inventor y ofrecer abrir la WebApp
-            Dim msgConfirmacion As String
-            If postSuccess Then
-                msgConfirmacion = String.Format(
-                    "¡Lista de Materiales transmitida exitosamente a la WebApp!" & System.Environment.NewLine & System.Environment.NewLine &
-                    "• Ensamblaje: {0}" & System.Environment.NewLine &
-                    "• Componentes extraídos: {1} piezas reales" & System.Environment.NewLine &
-                    "• Servidor conectado: {2}" & System.Environment.NewLine & System.Environment.NewLine &
-                    "La WebApp en tu navegador actualiza la LDM en tiempo real." & System.Environment.NewLine &
-                    "• Copia de seguridad en Portapapeles y en C:\OdooInventor\bom_export.json" & System.Environment.NewLine & System.Environment.NewLine &
-                    "¿Deseás abrir o refrescar la WebApp en el navegador?",
-                    partNumber, bomList.Count, webAppBaseUrl)
-            Else
-                msgConfirmacion = String.Format(
-                    "¡{0} componentes reales extraídos del ensamblaje '{1}'!" & System.Environment.NewLine & System.Environment.NewLine &
-                    "• Se copiaron al PORTAPAPELES de Windows automáticamente." & System.Environment.NewLine &
-                    "• Se guardó una copia en C:\OdooInventor\bom_export.json" & System.Environment.NewLine & System.Environment.NewLine &
-                    "¿Deseás abrir la WebApp ahora en el navegador precargada con estos componentes?",
-                    bomList.Count, partNumber)
-            End If
+            ' 6. Conexión exitosa: Ofrecer abrir la WebApp en localhost:3000
+            Dim targetBrowserUrl As String = If(Not String.IsNullOrWhiteSpace(sessionId),
+                String.Format("http://localhost:3000/?session={0}&view=bom", sessionId),
+                "http://localhost:3000/?view=bom")
+
+            Dim msgConfirmacion As String = String.Format(
+                "¡Lista de Materiales transmitida exitosamente a la WebApp!" & System.Environment.NewLine & System.Environment.NewLine &
+                "• Ensamblaje: {0}" & System.Environment.NewLine &
+                "• Componentes extraídos: {1} piezas reales" & System.Environment.NewLine &
+                "• Servidor: http://localhost:3000" & System.Environment.NewLine & System.Environment.NewLine &
+                "¿Deseás abrir la WebApp en tu navegador ahora?",
+                partNumber, bomList.Count)
 
             Dim res As DialogResult = MessageBox.Show(
                 msgConfirmacion,
-                "OdooInventor — Sincronización de LDM",
+                "OdooInventor — Sincronización Exitosa",
                 MessageBoxButtons.YesNo,
                 MessageBoxIcon.Information)
 
             If res = DialogResult.Yes Then
-                Process.Start(New ProcessStartInfo(directUrlWithData) With {.UseShellExecute = True})
+                Process.Start(New ProcessStartInfo(targetBrowserUrl) With {.UseShellExecute = True})
             End If
 
         Catch ex As Exception

@@ -30,6 +30,7 @@ interface PurchaseRequisitionViewProps {
   odooUrl: string;
   onGoToBom: () => void;
   onNotification?: (type: 'success' | 'error' | 'info', message: string) => void;
+  onUpdateBom?: (newBom: BomItem[]) => void;
 }
 
 interface ItemProductMapping {
@@ -45,7 +46,8 @@ export const PurchaseRequisitionView: React.FC<PurchaseRequisitionViewProps> = (
   part,
   odooUrl,
   onGoToBom,
-  onNotification
+  onNotification,
+  onUpdateBom
 }) => {
   const [onlyCom, setOnlyCom] = useState(true);
   const [odooProducts, setOdooProducts] = useState<OdooProduct[]>([]);
@@ -55,6 +57,14 @@ export const PurchaseRequisitionView: React.FC<PurchaseRequisitionViewProps> = (
   // Settings & Parameters modal state
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [isHistoryOpen, setIsHistoryOpen] = useState(false);
+  const [isAddManualOpen, setIsAddManualOpen] = useState(false);
+
+  // Manual item state
+  const [manualPartNumber, setManualPartNumber] = useState('');
+  const [manualDesc, setManualDesc] = useState('');
+  const [manualQty, setManualQty] = useState('1');
+  const [manualUom, setManualUom] = useState('Unidades');
+  const [manualMaterial, setManualMaterial] = useState('Comercial');
 
   // Form Fields
   const [origin, setOrigin] = useState(() => part ? `${part.partNumber} — ${part.name}` : 'OT-26148 - FLAMARIQUE');
@@ -153,14 +163,49 @@ export const PurchaseRequisitionView: React.FC<PurchaseRequisitionViewProps> = (
       } catch {
         stateData = {};
       }
-      if (stateData.odooProducts) {
+      if (stateData.odooProducts && stateData.odooProducts.length > 0) {
         setOdooProducts(stateData.odooProducts);
       }
       if (stateData.purchaseRequisitions) {
         setRequisitions(stateData.purchaseRequisitions);
       }
+
+      // 2. Query /api/odoo/products/search to fetch all available catalog items (live or cached)
+      const searchRes = await fetch('/api/odoo/products/search', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          query: '',
+          url: odooUrl,
+          db: odooDb,
+          login: odooLogin,
+          apiKey: odooApiKey,
+          limit: 100
+        })
+      });
+      const searchText = await searchRes.text();
+      let searchData: any = {};
+      try {
+        searchData = JSON.parse(searchText);
+      } catch {
+        searchData = {};
+      }
+      if (searchData.success && searchData.products && searchData.products.length > 0) {
+        setOdooProducts(prev => {
+          const combined = [...prev];
+          for (const np of searchData.products) {
+            const idx = combined.findIndex(c => c.id === np.id);
+            if (idx >= 0) {
+              combined[idx] = { ...combined[idx], ...np };
+            } else {
+              combined.push(np);
+            }
+          }
+          return combined;
+        });
+      }
     } catch (err) {
-      console.warn('Error loading state:', err);
+      console.warn('Error loading initial data:', err);
     }
   };
 
@@ -168,29 +213,109 @@ export const PurchaseRequisitionView: React.FC<PurchaseRequisitionViewProps> = (
     loadInitialData();
   }, []);
 
-  // Helper function to tokenize and calculate similarity
+// Helper to extract clean product code/term from PIEZA CAD / REFERENCIA (e.g. "[247964]" -> "247964", "(PIAZ 1258)" -> "PIAZ 1258")
+export const extractSearchCode = (partNumber: string): string => {
+  if (!partNumber) return '';
+  const trimmed = partNumber.trim();
+  // 1. Bracket code: [247964] -> 247964
+  const bracket = trimmed.match(/\[([A-Za-z0-9_\-\.\s]+)\]/);
+  if (bracket && bracket[1] && bracket[1].trim().length >= 2) {
+    return bracket[1].trim();
+  }
+  // 2. Paren code: (PIAZ 1258) -> PIAZ 1258
+  const paren = trimmed.match(/\(([A-Za-z0-9_\-\.\s]{3,})\)/);
+  if (paren && paren[1] && paren[1].trim().length >= 2) {
+    const clean = paren[1].trim();
+    if (!['alternativo', 'import', 'estandar', 'acero', 'inox', 'final v4'].includes(clean.toLowerCase())) {
+      return clean;
+    }
+  }
+  // 3. PIAZ pattern
+  const piaz = trimmed.match(/\b(PIAZ\s*\d+)\b/i);
+  if (piaz && piaz[1]) {
+    return piaz[1].trim();
+  }
+  return trimmed;
+};
+
+  // Helper function to tokenize and calculate similarity strictly based on PIEZA CAD / REFERENCIA
   const findMatchesForBomItem = (item: BomItem, catalog: OdooProduct[]): { best: OdooProduct | null; type: 'exact' | 'similar' | 'new'; candidates: OdooProduct[] } => {
     if (!catalog || catalog.length === 0) {
       return { best: null, type: 'new', candidates: [] };
     }
 
-    const itemCode = String(item.partNumber || '').trim().toLowerCase();
-    const itemDesc = String(item.description || '').trim().toLowerCase();
-    const itemText = `${itemCode} ${itemDesc}`;
+    // STRICTLY USE PIEZA CAD / REFERENCIA (item.partNumber) - Description from Inventor is ignored as requested
+    const itemPartNumber = String(item.partNumber || '').trim();
+    const fullText = itemPartNumber.toLowerCase();
 
-    // 1. Check exact default_code match
-    const exactCode = catalog.find(p => p.default_code && p.default_code.trim().toLowerCase() === itemCode);
+    // 1. Extract specific codes from brackets [247964], parens (PIAZ 1258), or tokens
+    const extractedCodes: string[] = [];
+
+    // Brackets: e.g. [247964]
+    const bracketMatches = itemPartNumber.match(/\[([A-Za-z0-9_\-\.\s]+)\]/g);
+    if (bracketMatches) {
+      bracketMatches.forEach(b => {
+        const c = b.replace(/[\[\]]/g, '').trim().toLowerCase();
+        if (c.length >= 2) extractedCodes.push(c);
+      });
+    }
+
+    // Parentheses: e.g. (PIAZ 1258)
+    const parenMatches = itemPartNumber.match(/\(([A-Za-z0-9_\-\.\s]{3,})\)/g);
+    if (parenMatches) {
+      parenMatches.forEach(p => {
+        const c = p.replace(/[\(\)]/g, '').trim().toLowerCase();
+        const ignoreList = ['alternativo', 'import', 'estandar', 'acero', 'inox', 'final v4'];
+        if (c.length >= 2 && !ignoreList.includes(c)) {
+          extractedCodes.push(c);
+        }
+      });
+    }
+
+    // PIAZ pattern
+    const piazMatches = itemPartNumber.match(/\b(PIAZ\s*\d+)\b/gi);
+    if (piazMatches) {
+      piazMatches.forEach(p => extractedCodes.push(p.trim().toLowerCase()));
+    }
+
+    // 2. Check if any extracted code matches a product's default_code directly
+    for (const code of extractedCodes) {
+      const match = catalog.find(p => p.default_code && p.default_code.trim().toLowerCase() === code);
+      if (match) {
+        return { best: match, type: 'exact', candidates: [match] };
+      }
+    }
+
+    // 3. Check if any product's default_code is contained inside itemPartNumber or vice-versa
+    for (const prod of catalog) {
+      const pCode = String(prod.default_code || '').trim().toLowerCase();
+      if (pCode.length >= 3) {
+        if (fullText.includes(pCode) || pCode === itemPartNumber.toLowerCase()) {
+          return { best: prod, type: 'exact', candidates: [prod] };
+        }
+      }
+    }
+
+    // 4. Check exact default_code match with whole partNumber
+    const exactCode = catalog.find(p => p.default_code && p.default_code.trim().toLowerCase() === itemPartNumber.toLowerCase());
     if (exactCode) {
       return { best: exactCode, type: 'exact', candidates: [exactCode] };
     }
 
-    // 2. Check exact name match
-    const exactName = catalog.find(p => p.name && p.name.trim().toLowerCase() === itemDesc);
+    // 5. Check exact name match or if product name is inside itemPartNumber or vice versa
+    const exactName = catalog.find(p => {
+      const pName = String(p.name || '').trim().toLowerCase();
+      return pName && (
+        pName === itemPartNumber.toLowerCase() ||
+        fullText.includes(pName) ||
+        pName.includes(itemPartNumber.toLowerCase())
+      );
+    });
     if (exactName) {
       return { best: exactName, type: 'exact', candidates: [exactName] };
     }
 
-    // 3. Token-based fuzzy matching
+    // 6. Token-based fuzzy matching strictly from itemPartNumber
     const stopWords = new Set(['de', 'la', 'el', 'en', 'para', 'y', 'con', 'sin', 'un', 'una', '-', '/', 'c/', 'chapa']);
     const getTokens = (str: string) => 
       str.toLowerCase()
@@ -198,7 +323,7 @@ export const PurchaseRequisitionView: React.FC<PurchaseRequisitionViewProps> = (
         .split(/\s+/)
         .filter(t => t.length > 2 && !stopWords.has(t));
 
-    const itemTokens = getTokens(itemText);
+    const itemTokens = getTokens(itemPartNumber);
 
     // Score all products
     const scored = catalog.map(prod => {
@@ -212,9 +337,9 @@ export const PurchaseRequisitionView: React.FC<PurchaseRequisitionViewProps> = (
       }
 
       // Special priority for key engineering keywords
-      const keyKeywords = ['motorreductor', 'rodamient', 'brida', 'tambor', 'reductor', 'umi', 'skf', 'chapa', 'perfil', 'malla', 'tornillo'];
+      const keyKeywords = ['motorreductor', 'rodamient', 'brida', 'tambor', 'reductor', 'umi', 'skf', 'chapa', 'perfil', 'malla', 'tornillo', 'acoplamiento', 'rueda'];
       for (const kw of keyKeywords) {
-        if (itemText.includes(kw) && prodText.includes(kw)) {
+        if (fullText.includes(kw) && prodText.includes(kw)) {
           score += 6;
         }
       }
@@ -243,19 +368,27 @@ export const PurchaseRequisitionView: React.FC<PurchaseRequisitionViewProps> = (
       return;
     }
 
-    const newMappings: ItemProductMapping[] = part.bom.map(item => {
-      const { best, type, candidates } = findMatchesForBomItem(item, odooProducts);
-      return {
-        item,
-        qty: item.qty || 1,
-        selectedProduct: best,
-        matchType: best ? type : 'new',
-        candidates,
-        isIncluded: true
-      };
+    setMappings(prev => {
+      return part.bom.map(item => {
+        const existing = prev.find(m => m.item.id === item.id);
+        if (existing) {
+          return {
+            ...existing,
+            item,
+            qty: item.qty || existing.qty
+          };
+        }
+        const { best, type, candidates } = findMatchesForBomItem(item, odooProducts);
+        return {
+          item,
+          qty: item.qty || 1,
+          selectedProduct: best,
+          matchType: best ? type : 'new',
+          candidates,
+          isIncluded: true
+        };
+      });
     });
-
-    setMappings(newMappings);
   }, [part?.bom, odooProducts]);
 
   // Filtered rows for the table
@@ -271,6 +404,77 @@ export const PurchaseRequisitionView: React.FC<PurchaseRequisitionViewProps> = (
   const totalUnits = activeItemsToUpload.reduce((acc, curr) => acc + curr.qty, 0);
   const linkedCount = activeItemsToUpload.filter(m => m.selectedProduct !== null).length;
 
+  // Toggle item inclusion
+  const handleToggleInclude = (itemId: string) => {
+    setMappings(prev => prev.map(m => {
+      if (m.item.id === itemId) {
+        return { ...m, isIncluded: !m.isIncluded };
+      }
+      return m;
+    }));
+  };
+
+  // Select / Deselect all displayed items
+  const allDisplayedIncluded = displayedMappings.length > 0 && displayedMappings.every(m => m.isIncluded);
+  const handleToggleSelectAll = () => {
+    const targetState = !allDisplayedIncluded;
+    setMappings(prev => prev.map(m => {
+      if (onlyCom && !m.item.isCom) return m;
+      return { ...m, isIncluded: targetState };
+    }));
+  };
+
+  // Toggle item COM status (Comercial vs Fabricada)
+  const handleToggleCom = (itemId: string) => {
+    if (!part || !part.bom) return;
+    const updatedBom = part.bom.map(b => 
+      b.id === itemId ? { ...b, isCom: !b.isCom } : b
+    );
+    if (onUpdateBom) {
+      onUpdateBom(updatedBom);
+    }
+    setMappings(prev => prev.map(m => {
+      if (m.item.id === itemId) {
+        return {
+          ...m,
+          item: { ...m.item, isCom: !m.item.isCom }
+        };
+      }
+      return m;
+    }));
+  };
+
+  // Add a manual commercial item to the BOM and requisition
+  const handleAddManualItem = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!manualPartNumber.trim() || !manualDesc.trim()) return;
+
+    const newItem: BomItem = {
+      id: Date.now().toString(),
+      item: String((part?.bom?.length || 0) + 1),
+      partNumber: manualPartNumber.trim(),
+      description: manualDesc.trim(),
+      qty: parseFloat(manualQty) || 1,
+      uom: manualUom || 'Unidades',
+      material: manualMaterial || 'Comercial',
+      odooId: `PROD-${Math.floor(100 + Math.random() * 900)}`,
+      status: 'pending',
+      isCom: true
+    };
+
+    const updatedBom = [...(part?.bom || []), newItem];
+    if (onUpdateBom) {
+      onUpdateBom(updatedBom);
+    }
+    setManualPartNumber('');
+    setManualDesc('');
+    setManualQty('1');
+    setIsAddManualOpen(false);
+    if (onNotification) {
+      onNotification('success', `Pieza comercial '${newItem.partNumber}' agregada a la solicitud.`);
+    }
+  };
+
   // Handle product selection for a row
   const handleSelectProduct = (itemId: string, product: OdooProduct | null, matchType: 'exact' | 'similar' | 'manual' | 'new') => {
     setMappings(prev => prev.map(m => {
@@ -285,16 +489,6 @@ export const PurchaseRequisitionView: React.FC<PurchaseRequisitionViewProps> = (
     }));
     setActiveSearchItemId(null);
     setInlineSearchQuery('');
-  };
-
-  // Toggle item inclusion
-  const handleToggleInclude = (itemId: string) => {
-    setMappings(prev => prev.map(m => {
-      if (m.item.id === itemId) {
-        return { ...m, isIncluded: !m.isIncluded };
-      }
-      return m;
-    }));
   };
 
   // Update item quantity
@@ -346,6 +540,29 @@ export const PurchaseRequisitionView: React.FC<PurchaseRequisitionViewProps> = (
       }
     }, 250);
   };
+
+  // Real-time combined search results from live Odoo and local catalog cache
+  const combinedSearchResults = useMemo(() => {
+    const query = inlineSearchQuery.trim().toLowerCase();
+    if (!query) {
+      return odooProducts.slice(0, 30);
+    }
+    const filteredLocal = odooProducts.filter(p => {
+      const code = String(p.default_code || '').toLowerCase();
+      const name = String(p.name || '').toLowerCase();
+      if (code.includes(query) || name.includes(query)) return true;
+      const tokens = query.split(/\s+/).filter(t => t.length >= 2);
+      return tokens.length > 0 && tokens.some(t => code.includes(t) || name.includes(t));
+    });
+
+    const list = [...liveSearchResults];
+    for (const lp of filteredLocal) {
+      if (!list.some(c => c.id === lp.id)) {
+        list.push(lp);
+      }
+    }
+    return list;
+  }, [inlineSearchQuery, liveSearchResults, odooProducts]);
 
   // Sync / Re-match all items against Odoo catalog
   const handleSyncCatalogAndMatch = async () => {
@@ -441,15 +658,16 @@ export const PurchaseRequisitionView: React.FC<PurchaseRequisitionViewProps> = (
             apiKey: '',
             origin: origin.trim() || (part ? part.partNumber : 'Autodesk Inventor LDM'),
             scheduleDate,
-            notes,
+            notes: notes || `Solicitud de compra de componentes comerciales — ${origin.trim() || (part ? part.partNumber : 'Autodesk Inventor LDM')}`,
             items: activeItemsToUpload.map(m => ({
               partNumber: m.item.partNumber,
-              description: m.item.description,
+              productCode: m.selectedProduct?.default_code || extractSearchCode(m.item.partNumber),
+              description: m.selectedProduct?.name || m.item.partNumber,
               qty: m.qty,
-              uom: m.item.uom,
+              uom: m.selectedProduct?.uom_id || m.item.uom || 'Unidades',
               isCom: m.item.isCom,
               odooProductId: m.selectedProduct?.id || null,
-              productName: m.selectedProduct?.name || m.item.description
+              productName: m.selectedProduct?.name || m.item.partNumber
             }))
           })
         });
@@ -502,16 +720,16 @@ export const PurchaseRequisitionView: React.FC<PurchaseRequisitionViewProps> = (
       login: odooLogin.trim(),
       apiKey: odooApiKey.trim(),
       origin: origin.trim() || (part ? part.partNumber : 'Autodesk Inventor LDM'),
-      scheduleDate,
-      notes,
+      notes: notes || `Solicitud de compra de componentes comerciales — ${origin.trim() || (part ? part.partNumber : 'Autodesk Inventor LDM')}`,
       items: activeItemsToUpload.map(m => ({
         partNumber: m.item.partNumber,
-        description: m.item.description,
+        productCode: m.selectedProduct?.default_code || extractSearchCode(m.item.partNumber),
+        description: m.selectedProduct?.name || m.item.partNumber,
         qty: m.qty,
-        uom: m.item.uom,
+        uom: m.selectedProduct?.uom_id || m.item.uom || 'Unidades',
         isCom: m.item.isCom,
         odooProductId: m.selectedProduct?.id || null,
-        productName: m.selectedProduct?.name || m.item.description
+        productName: m.selectedProduct?.name || m.item.partNumber
       }))
     };
 
@@ -696,6 +914,16 @@ export const PurchaseRequisitionView: React.FC<PurchaseRequisitionViewProps> = (
           >
             <Download className="w-3.5 h-3.5" />
             <span className="hidden sm:inline">Excel</span>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => setIsAddManualOpen(true)}
+            className="px-2.5 py-1.5 rounded-lg bg-slate-900 hover:bg-slate-850 text-orange-400 text-xs font-medium border border-slate-800 flex items-center space-x-1.5 transition"
+            title="Añadir una pieza comercial manual a la solicitud"
+          >
+            <PlusCircle className="w-3.5 h-3.5" />
+            <span className="hidden sm:inline">Añadir COM</span>
           </button>
 
           {/* Primary Action Button */}
@@ -917,8 +1145,21 @@ export const PurchaseRequisitionView: React.FC<PurchaseRequisitionViewProps> = (
           <table className="w-full text-left text-xs border-collapse">
             <thead className="bg-slate-950 text-slate-400 uppercase text-[10px] font-semibold sticky top-0 z-20 border-b border-slate-800 shadow-sm">
               <tr>
-                <th className="px-3 py-2.5 text-center w-12">Inc.</th>
-                <th className="px-3 py-2.5 w-16">Tipo</th>
+                <th className="px-3 py-2 text-center w-12">
+                  <div className="flex flex-col items-center space-y-0.5">
+                    <span className="font-bold">ING.</span>
+                    <input
+                      type="checkbox"
+                      checked={allDisplayedIncluded}
+                      onChange={handleToggleSelectAll}
+                      className="rounded border-slate-700 text-orange-500 focus:ring-orange-500 cursor-pointer w-3.5 h-3.5"
+                      title="Seleccionar / Deseleccionar todos los mostrados"
+                    />
+                  </div>
+                </th>
+                <th className="px-3 py-2.5 w-16 text-center" title="Tipo: Hacer clic en el badge de cualquier fila para cambiar entre COM y FAB">
+                  Tipo
+                </th>
                 <th className="px-3 py-2.5 min-w-[170px]">Pieza CAD / Referencia</th>
                 <th className="px-3 py-2.5 min-w-[220px]">Descripción de Ingeniería</th>
                 <th className="px-3 py-2.5 text-center w-24">Cantidad</th>
@@ -959,17 +1200,27 @@ export const PurchaseRequisitionView: React.FC<PurchaseRequisitionViewProps> = (
                       />
                     </td>
 
-                    {/* COM Badge */}
-                    <td className="px-3 py-2">
-                      {m.item.isCom ? (
-                        <span className="px-1.5 py-0.5 rounded text-[9px] font-mono font-bold bg-emerald-500/20 text-emerald-400 border border-emerald-500/30">
-                          ✓ COM
-                        </span>
-                      ) : (
-                        <span className="px-1.5 py-0.5 rounded text-[9px] font-mono text-slate-500 bg-slate-800">
-                          FAB
-                        </span>
-                      )}
+                    {/* COM Badge (Interactive Toggle) */}
+                    <td className="px-3 py-2 text-center">
+                      <button
+                        type="button"
+                        onClick={() => handleToggleCom(m.item.id)}
+                        className={`px-2 py-0.5 rounded text-[9px] font-mono font-bold transition inline-flex items-center space-x-1 cursor-pointer border ${
+                          m.item.isCom 
+                            ? 'bg-emerald-500/20 text-emerald-400 border-emerald-500/30 hover:bg-emerald-500/40' 
+                            : 'bg-slate-800 text-slate-400 border-slate-700 hover:bg-slate-700 hover:text-slate-200'
+                        }`}
+                        title={m.item.isCom ? 'Hacer clic para desmarcar COM (pasa a Fabricada)' : 'Hacer clic para marcar como COM (pasa a Comercial)'}
+                      >
+                        {m.item.isCom ? (
+                          <>
+                            <Check className="w-3 h-3 text-emerald-400" />
+                            <span>COM</span>
+                          </>
+                        ) : (
+                          <span>FAB</span>
+                        )}
+                      </button>
                     </td>
 
                     {/* Part Number */}
@@ -1007,15 +1258,15 @@ export const PurchaseRequisitionView: React.FC<PurchaseRequisitionViewProps> = (
                     <td className="px-3 py-2 relative">
                       {isSearchingThis ? (
                         /* Inline Search Dropdown Box */
-                        <div className="bg-slate-950 border border-orange-500/80 rounded-lg p-2.5 shadow-2xl space-y-2 z-30">
-                          <div className="flex items-center space-x-1.5">
+                        <div className="bg-slate-950 border border-orange-500/90 rounded-lg p-2.5 shadow-2xl space-y-2 z-30">
+                          <div className="flex items-center space-x-1.5 bg-slate-900 border border-slate-700 rounded px-2 py-1">
                             <Search className="w-3.5 h-3.5 text-orange-400 shrink-0" />
                             <input
                               type="text"
                               value={inlineSearchQuery}
                               onChange={e => handleSearchInputChange(e.target.value)}
-                              placeholder="Buscar producto en base de datos Odoo..."
-                              className="w-full bg-slate-900 border border-slate-700 rounded px-2 py-1 text-xs text-white focus:outline-none"
+                              placeholder="Ingresá descripción o código para buscar en Odoo..."
+                              className="w-full bg-transparent text-xs text-white focus:outline-none placeholder-slate-500"
                               autoFocus
                             />
                             <button
@@ -1027,17 +1278,31 @@ export const PurchaseRequisitionView: React.FC<PurchaseRequisitionViewProps> = (
                             </button>
                           </div>
 
+                          {/* Header info */}
+                          <div className="flex items-center justify-between text-[10px] text-slate-400 px-1">
+                            <span>Productos en Odoo ({combinedSearchResults.length} disponibles)</span>
+                            {inlineSearchQuery && (
+                              <button 
+                                type="button" 
+                                onClick={() => { setInlineSearchQuery(''); handleSearchInputChange(''); }}
+                                className="text-orange-400 hover:underline"
+                              >
+                                Limpiar filtro
+                              </button>
+                            )}
+                          </div>
+
                           {/* Candidates & Search Results */}
-                          <div className="max-h-48 overflow-y-auto space-y-1 divide-y divide-slate-850">
+                          <div className="max-h-52 overflow-y-auto space-y-1 divide-y divide-slate-850">
                             {/* Option: Create New Product */}
                             <button
                               type="button"
                               onClick={() => handleSelectProduct(m.item.id, null, 'new')}
-                              className="w-full text-left p-1.5 rounded hover:bg-slate-800 text-slate-300 flex items-center justify-between group transition"
+                              className="w-full text-left p-1.5 rounded hover:bg-slate-800 text-slate-300 flex items-center justify-between group transition border border-dashed border-slate-700 hover:border-orange-500/60"
                             >
                               <div className="flex items-center space-x-1.5">
-                                <PlusCircle className="w-3.5 h-3.5 text-orange-400" />
-                                <span className="font-semibold text-orange-300">
+                                <PlusCircle className="w-3.5 h-3.5 text-blue-400" />
+                                <span className="font-semibold text-blue-300">
                                   Crear como nuevo producto en Odoo
                                 </span>
                               </div>
@@ -1046,78 +1311,114 @@ export const PurchaseRequisitionView: React.FC<PurchaseRequisitionViewProps> = (
                               </span>
                             </button>
 
-                            {/* Show live search results or candidates */}
-                            {(inlineSearchQuery ? liveSearchResults : (m.candidates.length > 0 ? m.candidates : odooProducts.slice(0, 8))).map(prod => (
-                              <button
-                                key={prod.id}
-                                type="button"
-                                onClick={() => handleSelectProduct(m.item.id, prod, 'manual')}
-                                className="w-full text-left p-1.5 rounded hover:bg-slate-800/80 transition flex items-center justify-between gap-2"
-                              >
-                                <div className="truncate">
-                                  <div className="flex items-center space-x-1.5">
-                                    <span className="font-mono font-bold text-orange-400 text-[10px]">
-                                      {prod.default_code ? `[${prod.default_code}]` : ''}
-                                    </span>
-                                    <span className="text-slate-200 font-medium truncate">
-                                      {prod.name}
-                                    </span>
+                            {/* Show search results */}
+                            {combinedSearchResults.length === 0 ? (
+                              <div className="p-3 text-center text-slate-400 text-xs">
+                                No se encontraron productos coincidentes en Odoo para "{inlineSearchQuery}".
+                              </div>
+                            ) : (
+                              combinedSearchResults.map(prod => (
+                                <button
+                                  key={prod.id}
+                                  type="button"
+                                  onClick={() => handleSelectProduct(m.item.id, prod, 'manual')}
+                                  className="w-full text-left p-1.5 rounded hover:bg-slate-800/80 transition flex items-center justify-between gap-2 border border-transparent hover:border-slate-700"
+                                >
+                                  <div className="truncate min-w-0">
+                                    <div className="flex items-center space-x-1.5">
+                                      <span className="font-mono font-bold text-orange-400 text-[10px] shrink-0">
+                                        {prod.default_code ? `[${prod.default_code}]` : ''}
+                                      </span>
+                                      <span className="text-slate-200 font-medium truncate text-xs">
+                                        {prod.name}
+                                      </span>
+                                    </div>
+                                    <div className="text-[10px] text-slate-400 font-mono flex items-center space-x-2 mt-0.5">
+                                      <span>ID: {prod.id}</span>
+                                      <span>•</span>
+                                      <span className="text-emerald-400">Stock: {prod.qty_available} {prod.uom_id}</span>
+                                      {prod.standard_price > 0 && <span>• ${prod.standard_price.toLocaleString('es-AR')}</span>}
+                                    </div>
                                   </div>
-                                  <div className="text-[10px] text-slate-400 font-mono">
-                                    ID: {prod.id} • Stock: {prod.qty_available} {prod.uom_id}
-                                  </div>
-                                </div>
-                                <span className="text-[10px] px-1.5 py-0.5 rounded bg-emerald-500/10 text-emerald-300 border border-emerald-500/30 shrink-0">
-                                  Vincular
-                                </span>
-                              </button>
-                            ))}
+                                  <span className="text-[10px] px-2 py-0.5 rounded bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 shrink-0 font-semibold hover:bg-emerald-500 hover:text-white transition">
+                                    Vincular
+                                  </span>
+                                </button>
+                              ))
+                            )}
                           </div>
                         </div>
                       ) : (
-                        /* Product Preview Card */
-                        <div className="flex items-center justify-between p-1.5 rounded-lg bg-slate-950/80 border border-slate-800 hover:border-slate-700 transition gap-2">
-                          <div className="truncate min-w-0">
-                            {p ? (
-                              <div>
-                                <div className="flex items-center space-x-1.5 truncate">
-                                  <span className="font-mono font-bold text-orange-400 text-[10px] shrink-0">
-                                    {p.default_code ? `[${p.default_code}]` : `ID:${p.id}`}
-                                  </span>
-                                  <span className="text-slate-200 truncate font-medium" title={p.name}>
-                                    {p.name}
-                                  </span>
-                                </div>
-                                <div className="text-[10px] text-slate-400 font-mono flex items-center space-x-2">
-                                  <span>ID Odoo: {p.id}</span>
-                                  <span>•</span>
-                                  <span className="text-emerald-400">Stock: {p.qty_available} {p.uom_id}</span>
-                                </div>
+                        /* Product Preview Card or Interactive Search Trigger */
+                        p ? (
+                          <div className="flex items-center justify-between p-1.5 rounded-lg bg-slate-950/80 border border-slate-800 hover:border-slate-700 transition gap-2">
+                            <div className="truncate min-w-0">
+                              <div className="flex items-center space-x-1.5 truncate">
+                                <span className="font-mono font-bold text-orange-400 text-[10px] shrink-0">
+                                  {p.default_code ? `[${p.default_code}]` : `ID:${p.id}`}
+                                </span>
+                                <span className="text-slate-200 truncate font-medium text-xs" title={p.name}>
+                                  {p.name}
+                                </span>
                               </div>
-                            ) : (
-                              <div className="flex items-center space-x-1.5 text-slate-400">
-                                <PlusCircle className="w-3.5 h-3.5 text-blue-400 shrink-0" />
-                                <span className="text-slate-300">Crear como nuevo producto en Odoo</span>
+                              <div className="text-[10px] text-slate-400 font-mono flex items-center space-x-2 mt-0.5">
+                                <span>ID Odoo: {p.id}</span>
+                                <span>•</span>
+                                <span className="text-emerald-400">Stock: {p.qty_available} {p.uom_id}</span>
                               </div>
-                            )}
-                          </div>
+                            </div>
 
-                          {/* Quick Change / Select Button */}
-                          <div className="flex items-center space-x-1 shrink-0">
-                            <button
-                              type="button"
-                              onClick={() => {
-                                setActiveSearchItemId(m.item.id);
-                                setInlineSearchQuery(m.item.description || m.item.partNumber);
-                              }}
-                              className="px-2 py-1 rounded bg-slate-850 hover:bg-slate-800 text-slate-300 hover:text-white border border-slate-700 text-[10px] font-semibold flex items-center space-x-1 transition"
-                              title="Buscar o seleccionar un producto compatible en Odoo"
-                            >
-                              <span>Cambiar</span>
-                              <ChevronDown className="w-3 h-3 text-slate-400" />
-                            </button>
+                            {/* Quick Change / Select Button & Unlink */}
+                            <div className="flex items-center space-x-1 shrink-0">
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setActiveSearchItemId(m.item.id);
+                                  const initialQuery = p.default_code || extractSearchCode(m.item.partNumber);
+                                  setInlineSearchQuery(initialQuery);
+                                  handleSearchInputChange(initialQuery);
+                                }}
+                                className="px-2 py-1 rounded bg-slate-850 hover:bg-slate-800 text-slate-300 hover:text-white border border-slate-700 text-[10px] font-semibold flex items-center space-x-1 transition"
+                                title="Cambiar producto vinculado en Odoo"
+                              >
+                                <span>Cambiar</span>
+                                <ChevronDown className="w-3 h-3 text-slate-400" />
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => handleSelectProduct(m.item.id, null, 'new')}
+                                className="p-1 rounded bg-slate-850 hover:bg-rose-900/60 text-slate-400 hover:text-rose-300 border border-slate-700 text-[10px] transition"
+                                title="Desvincular (buscar otro o crear como nuevo)"
+                              >
+                                <X className="w-3 h-3" />
+                              </button>
+                            </div>
                           </div>
-                        </div>
+                        ) : (
+                          <div 
+                            onClick={() => {
+                              setActiveSearchItemId(m.item.id);
+                              const initialQuery = extractSearchCode(m.item.partNumber);
+                              setInlineSearchQuery(initialQuery);
+                              handleSearchInputChange(initialQuery);
+                            }}
+                            className="flex items-center justify-between p-1.5 rounded-lg bg-slate-950/90 border border-amber-500/50 hover:border-orange-500 cursor-pointer transition group"
+                            title="Hacer clic para abrir buscador y desplegable de productos Odoo"
+                          >
+                            <div className="flex items-center space-x-2 truncate">
+                              <Search className="w-3.5 h-3.5 text-amber-400 shrink-0 group-hover:scale-110 transition-transform" />
+                              <span className="text-slate-300 text-xs truncate">
+                                Buscar producto en Odoo (código o referencia CAD)...
+                              </span>
+                            </div>
+                            <div className="flex items-center space-x-1 shrink-0">
+                              <span className="text-[10px] text-orange-400 font-semibold group-hover:underline">
+                                Desplegar
+                              </span>
+                              <ChevronDown className="w-3.5 h-3.5 text-orange-400" />
+                            </div>
+                          </div>
+                        )
                       )}
                     </td>
 
@@ -1213,6 +1514,112 @@ export const PurchaseRequisitionView: React.FC<PurchaseRequisitionViewProps> = (
               ))}
             </div>
           )}
+        </div>
+      )}
+
+      {/* Modal: Añadir Pieza Comercial Manual a la Solicitud */}
+      {isAddManualOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm p-4">
+          <div className="bg-slate-900 border border-slate-800 rounded-xl p-5 w-full max-w-md shadow-2xl space-y-4">
+            <div className="flex items-center justify-between border-b border-slate-800 pb-3">
+              <h3 className="text-sm font-bold text-slate-100 flex items-center space-x-2">
+                <PlusCircle className="w-4 h-4 text-orange-400" />
+                <span>Añadir Pieza Comercial (COM) a la Solicitud</span>
+              </h3>
+              <button 
+                type="button" 
+                onClick={() => setIsAddManualOpen(false)} 
+                className="text-slate-400 hover:text-white"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <form onSubmit={handleAddManualItem} className="space-y-3 text-xs">
+              <p className="text-[11px] text-slate-400">
+                Agregá un artículo comercial extra o insumo de compra a la LDM activa para vincularlo y pedirlo en Odoo.
+              </p>
+
+              <div>
+                <label className="text-slate-400 block mb-1">Referencia / Código Comercial:</label>
+                <input
+                  type="text"
+                  required
+                  placeholder="ej. RODAMIENTO UCFL 206 o MOTOR-UMI-50"
+                  value={manualPartNumber}
+                  onChange={(e) => setManualPartNumber(e.target.value)}
+                  className="w-full px-2.5 py-1.5 bg-slate-950 border border-slate-700 rounded text-slate-100 font-mono text-xs focus:outline-none focus:border-orange-500"
+                />
+              </div>
+
+              <div>
+                <label className="text-slate-400 block mb-1">Descripción de Ingeniería:</label>
+                <input
+                  type="text"
+                  required
+                  placeholder="ej. Rodamiento autoalineable con caja brida 2 agujeros"
+                  value={manualDesc}
+                  onChange={(e) => setManualDesc(e.target.value)}
+                  className="w-full px-2.5 py-1.5 bg-slate-950 border border-slate-700 rounded text-slate-100 text-xs focus:outline-none focus:border-orange-500"
+                />
+              </div>
+
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="text-slate-400 block mb-1">Cantidad:</label>
+                  <input
+                    type="number"
+                    min="1"
+                    step="any"
+                    required
+                    value={manualQty}
+                    onChange={(e) => setManualQty(e.target.value)}
+                    className="w-full px-2.5 py-1.5 bg-slate-950 border border-slate-700 rounded text-slate-100 font-mono text-xs focus:outline-none focus:border-orange-500"
+                  />
+                </div>
+                <div>
+                  <label className="text-slate-400 block mb-1">Unidad de Medida:</label>
+                  <select
+                    value={manualUom}
+                    onChange={(e) => setManualUom(e.target.value)}
+                    className="w-full px-2.5 py-1.5 bg-slate-950 border border-slate-700 rounded text-slate-100 text-xs focus:outline-none focus:border-orange-500"
+                  >
+                    <option value="Unidades">Unidades</option>
+                    <option value="Metros">Metros</option>
+                    <option value="Kg">Kg</option>
+                    <option value="Litros">Litros</option>
+                  </select>
+                </div>
+              </div>
+
+              <div>
+                <label className="text-slate-400 block mb-1">Tipo de Material / Proveedor sugerido:</label>
+                <input
+                  type="text"
+                  placeholder="ej. Comercial / Normalizado / SKF / STM"
+                  value={manualMaterial}
+                  onChange={(e) => setManualMaterial(e.target.value)}
+                  className="w-full px-2.5 py-1.5 bg-slate-950 border border-slate-700 rounded text-slate-100 text-xs focus:outline-none focus:border-orange-500"
+                />
+              </div>
+
+              <div className="flex items-center justify-end space-x-2 pt-3 border-t border-slate-800">
+                <button
+                  type="button"
+                  onClick={() => setIsAddManualOpen(false)}
+                  className="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded"
+                >
+                  Cancelar
+                </button>
+                <button
+                  type="submit"
+                  className="px-4 py-1.5 bg-orange-600 hover:bg-orange-500 text-white font-semibold rounded shadow"
+                >
+                  Agregar a Solicitud COM
+                </button>
+              </div>
+            </form>
+          </div>
         </div>
       )}
 

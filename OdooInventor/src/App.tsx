@@ -3,10 +3,10 @@ import { RibbonHeader, InventorEnvironment } from './components/RibbonHeader';
 import { OdooConnectionDialog } from './components/OdooConnectionDialog';
 import { AssemblyPropertiesView } from './components/AssemblyPropertiesView';
 import { BOMSyncManager } from './components/BOMSyncManager';
+import { PurchaseRequisitionView } from './components/PurchaseRequisitionView';
 import { OdooProductsView } from './components/OdooProductsView';
 import { SyncLogsView } from './components/SyncLogsView';
 import { AddinInfoModal } from './components/AddinInfoModal';
-import { PurchaseRequisitionView } from './components/PurchaseRequisitionView';
 import { CadPart, OdooProduct, SyncLog, ConnectionTestResult, BomItem, ActiveView } from './types';
 import { CheckCircle2, AlertCircle, Info } from 'lucide-react';
 
@@ -41,14 +41,11 @@ export default function App() {
   useEffect(() => {
     // 1. Initial State
     fetch('/api/odoo/state')
-      .then(res => res.text())
-      .then(text => {
-        try {
-          const data = JSON.parse(text);
-          if (data.activePart) setPart(data.activePart);
-          if (data.odooProducts) setProducts(data.odooProducts);
-          if (data.syncLogs) setLogs(data.syncLogs);
-        } catch {}
+      .then(res => res.json())
+      .then(data => {
+        if (data.activePart) setPart(data.activePart);
+        if (data.odooProducts) setProducts(data.odooProducts);
+        if (data.syncLogs) setLogs(data.syncLogs);
       })
       .catch(err => {
         console.warn('Could not fetch server state:', err);
@@ -59,22 +56,21 @@ export default function App() {
     const viewParam = urlParams.get('view');
     if (viewParam && ['bom', 'iproperties', 'products', 'logs', 'requisition'].includes(viewParam)) {
       setActiveView(viewParam as ActiveView);
-      if (viewParam === 'requisition') setActiveTab('REQUISITION');
+      if (viewParam === 'requisition') {
+        setActiveTab('REQUISITION');
+      }
     }
 
     const sessionId = urlParams.get('session');
     if (sessionId) {
       fetch(`/api/inventor/session/${sessionId}`)
-        .then(res => res.text())
-        .then(text => {
-          try {
-            const data = JSON.parse(text);
-            if (data.success && data.session) {
-              setPart(data.session);
-              setActiveView('bom');
-              showNotification('success', `Cargado en vivo desde Inventor: ${data.session.name}`);
-            }
-          } catch {}
+        .then(res => res.json())
+        .then(data => {
+          if (data.success && data.session) {
+            setPart(data.session);
+            setActiveView('bom');
+            showNotification('success', `Cargado en vivo desde Inventor: ${data.session.name}`);
+          }
         })
         .catch(err => console.error('Error cargando sesión de Inventor:', err));
     }
@@ -102,30 +98,17 @@ export default function App() {
     const applyCadPayload = (payload: any, sourceName = 'Autodesk Inventor') => {
       if (!payload) return;
       const list = Array.isArray(payload) ? payload : (payload.bom || []);
-      const items: BomItem[] = list.map((item: any, idx: number) => {
-        const isComValue = Boolean(
-          item.isCom === true ||
-          item.com === true ||
-          ['true', 'si', 's', '1', 'x', 'yes', 'y', 'verdadero'].includes(String(item.com || item.COM || item.isCom || '').toLowerCase()) ||
-          String(item.partNumber || '').toUpperCase().startsWith('COMERCIAL') ||
-          String(item.partNumber || '').toUpperCase().startsWith('ISO') ||
-          String(item.partNumber || '').toUpperCase().startsWith('ROD-') ||
-          String(item.material || '').toUpperCase().includes('NORMALIZADO')
-        );
-
-        return {
-          id: String(idx + 1),
-          item: String(idx + 1),
-          partNumber: item.partNumber || item.name || `ITEM-${idx + 1}`,
-          description: item.description || item.name || item.partNumber || '',
-          qty: Number(item.qty || item.quantity || 1),
-          uom: item.uom || 'Unidades',
-          material: item.material || 'Comercial',
-          odooId: item.odooId || `PROD-${Math.floor(100 + Math.random() * 900)}`,
-          status: 'pending',
-          isCom: isComValue
-        };
-      });
+      const items: BomItem[] = list.map((item: any, idx: number) => ({
+        id: String(idx + 1),
+        item: String(idx + 1),
+        partNumber: item.partNumber || item.name || `ITEM-${idx + 1}`,
+        description: item.description || item.name || item.partNumber || '',
+        qty: Number(item.qty || item.quantity || 1),
+        uom: item.uom || 'Unidades',
+        material: item.material || 'Comercial',
+        odooId: item.odooId || `PROD-${Math.floor(100 + Math.random() * 900)}`,
+        status: 'pending'
+      }));
 
       const newPart: CadPart = {
         partNumber: payload.partNumber || 'ASM-INVENTOR',
@@ -236,8 +219,7 @@ export default function App() {
     const pollLatest = async () => {
       try {
         const res = await fetch('/api/inventor/latest');
-        const text = await res.text();
-        const data = JSON.parse(text);
+        const data = await res.json();
         if (data.success && data.activePart) {
           const currentTimestamp = data.activePart.lastSync || data.activePart.importedAt || '';
           if (lastKnownImportTime && currentTimestamp && currentTimestamp !== lastKnownImportTime) {
@@ -305,9 +287,7 @@ export default function App() {
           bomLines: part.bom
         })
       });
-      const text = await res.text();
-      let data: any = {};
-      try { data = JSON.parse(text); } catch { data = { success: false, message: 'Respuesta inválida del servidor' }; }
+      const data = await res.json();
       if (data.success) {
         showNotification('success', data.message);
         // Mark items as synced
@@ -323,8 +303,6 @@ export default function App() {
           details: `Lista de materiales sincronizada (${data.linesProcessed} componentes)`
         };
         setLogs(prev => [newLog, ...prev]);
-      } else {
-        showNotification('error', data.message || 'Error al sincronizar BOM');
       }
     } catch (err: any) {
       showNotification('error', `Error al sincronizar BOM: ${err.message}`);
@@ -348,9 +326,7 @@ export default function App() {
           iProperties: part.iProperties
         })
       });
-      const text = await res.text();
-      let data: any = {};
-      try { data = JSON.parse(text); } catch { data = { success: false, message: 'Respuesta inválida del servidor' }; }
+      const data = await res.json();
       if (data.success) {
         showNotification('success', data.message);
         const timestamp = new Date().toISOString().replace('T', ' ').substring(0, 19);
@@ -364,8 +340,6 @@ export default function App() {
           details: `Actualizadas iProperties en Odoo: Masa=${part.mass}kg, Costo=$${part.iProperties.StandardCost}`
         };
         setLogs(prev => [newLog, ...prev]);
-      } else {
-        showNotification('error', data.message || 'Error al enviar propiedades');
       }
     } catch (err: any) {
       showNotification('error', `Error al enviar propiedades: ${err.message}`);
@@ -429,16 +403,31 @@ export default function App() {
 
       {/* Main Viewport Content */}
       <main className="flex-1 flex overflow-hidden relative">
-        {activeView === 'bom' && part && (
+        {activeView === 'bom' && (
           <BOMSyncManager
             part={part}
             onUpdateBom={handleUpdateBom}
             onSyncBomToOdoo={handleSyncBomToOdoo}
             isSyncing={isSyncing}
-            onNavigateToRequisition={() => {
+            onLoadPart={setPart}
+            onClearPart={() => setPart(null)}
+            onGoToRequisition={() => {
               setActiveTab('REQUISITION');
               setActiveView('requisition');
             }}
+          />
+        )}
+
+        {activeView === 'requisition' && (
+          <PurchaseRequisitionView
+            part={part}
+            odooUrl={odooUrl}
+            onGoToBom={() => {
+              setActiveTab('ODOO');
+              setActiveView('bom');
+            }}
+            onUpdateBom={handleUpdateBom}
+            onNotification={showNotification}
           />
         )}
 
@@ -456,18 +445,6 @@ export default function App() {
           <OdooProductsView
             products={products}
             odooUrl={odooUrl}
-          />
-        )}
-
-        {activeView === 'requisition' && (
-          <PurchaseRequisitionView
-            part={part}
-            odooUrl={odooUrl}
-            onGoToBom={() => {
-              setActiveTab('ODOO');
-              setActiveView('bom');
-            }}
-            onNotification={showNotification}
           />
         )}
 

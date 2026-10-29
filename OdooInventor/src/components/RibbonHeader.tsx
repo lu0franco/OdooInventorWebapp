@@ -69,9 +69,9 @@ export const RibbonHeader: React.FC<RibbonHeaderProps> = ({
           color: part ? 'bg-orange-500/20 text-orange-300' : 'bg-amber-500/20 text-amber-300' 
         };
       case 'Part':
-        return { ext: '.ipt', name: 'D-659.01.03.ipt — COSTILLA CAJÓN', color: 'bg-blue-500/20 text-blue-300' };
+        return { ext: '.ipt', name: part ? `${part.partNumber}.ipt` : 'Sin pieza vinculada', color: 'bg-blue-500/20 text-blue-300' };
       case 'Drawing':
-        return { ext: '.idw', name: 'D-659.00-DWG.idw — Plano de Montaje y Conjunto General', color: 'bg-emerald-500/20 text-emerald-300' };
+        return { ext: '.idw', name: part ? `${part.partNumber}.idw` : 'Sin plano vinculado', color: 'bg-emerald-500/20 text-emerald-300' };
       case 'ZeroDoc':
         return { ext: 'ZeroDoc', name: 'Sin documento activo en Autodesk Inventor', color: 'bg-slate-700 text-slate-300' };
     }
