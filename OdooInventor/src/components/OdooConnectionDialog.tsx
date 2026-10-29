@@ -78,9 +78,19 @@ export const OdooConnectionDialog: React.FC<OdooConnectionDialogProps> = ({
         body: JSON.stringify({ url: trimmedUrl, apiKey: apiKey.trim() })
       });
 
-      const data: ConnectionTestResult = await response.json();
+      const responseText = await response.text();
+      let data: ConnectionTestResult;
+      try {
+        data = JSON.parse(responseText);
+      } catch {
+        data = {
+          success: false,
+          error: 'Respuesta inválida del servidor proxy',
+          formattedOutput: responseText
+        };
+      }
       setLastResult(data);
-      setResultado(data.formattedOutput);
+      setResultado(data.formattedOutput || '');
       onTestSuccess(data);
     } catch (err: any) {
       const errorMsg = [
@@ -128,7 +138,9 @@ export const OdooConnectionDialog: React.FC<OdooConnectionDialogProps> = ({
           password: authPassword || apiKey
         })
       });
-      const data = await res.json();
+      const resText = await res.text();
+      let data: any = {};
+      try { data = JSON.parse(resText); } catch { data = { success: false, error: 'Respuesta inválida' }; }
       if (data.success) {
         setAuthResult(`✅ ¡Autenticación Exitosa! Usuario UID: ${data.uid}. Conectado a la base de datos "${authDb.trim()}".`);
         setAuthIsSuccess(true);

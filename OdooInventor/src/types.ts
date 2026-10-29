@@ -19,6 +19,13 @@ export interface IProperties {
   CostCenter: string;
   StandardCost: number;
   StockLocation: string;
+  // Campos del RuleManager / Proyecto de Inventor vinculados a Odoo
+  PartNumber?: string;   // Nº de pieza (Púrpura) -> Referencia en Odoo
+  StockNumber?: string;  // Nº de almacenamiento (Amarillo) -> Descripción en Odoo
+  Project?: string;      // Proyecto (OT) (Rojo) -> Prefijo Referencia en Odoo
+  Designer?: string;     // Diseñador (Azul) -> Autorizador en Odoo
+  Vendor?: string;       // Proveedor / Cliente
+  Location?: string;     // Ubicación de archivo / Documento
 }
 
 export interface CadPart {
@@ -71,3 +78,34 @@ export interface ConnectionTestResult {
   error?: string;
   isNetworkError?: boolean;
 }
+
+export interface PurchaseRequisitionLine {
+  id?: string | number;
+  partNumber: string;
+  description: string;
+  qty: number;
+  uom: string;
+  price_unit?: number;
+  schedule_date?: string;
+  isCom?: boolean;
+  product_id?: number | string;
+  notes?: string;
+}
+
+export interface PurchaseRequisition {
+  id?: number | string;
+  name: string;
+  origin: string;
+  state: 'draft' | 'ongoing' | 'in_progress' | 'done' | 'cancel';
+  type_id?: string;
+  user_id?: string;
+  ordering_date?: string;
+  schedule_date?: string;
+  lines: PurchaseRequisitionLine[];
+  timestamp?: string;
+  notes?: string;
+  simulated?: boolean;
+}
+
+export type ActiveView = 'bom' | 'iproperties' | 'products' | 'logs' | 'requisition';
+

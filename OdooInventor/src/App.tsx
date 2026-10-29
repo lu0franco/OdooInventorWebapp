@@ -6,12 +6,13 @@ import { BOMSyncManager } from './components/BOMSyncManager';
 import { OdooProductsView } from './components/OdooProductsView';
 import { SyncLogsView } from './components/SyncLogsView';
 import { AddinInfoModal } from './components/AddinInfoModal';
-import { CadPart, OdooProduct, SyncLog, ConnectionTestResult, BomItem } from './types';
+import { PurchaseRequisitionView } from './components/PurchaseRequisitionView';
+import { CadPart, OdooProduct, SyncLog, ConnectionTestResult, BomItem, ActiveView } from './types';
 import { CheckCircle2, AlertCircle, Info } from 'lucide-react';
 
 export default function App() {
   const [activeTab, setActiveTab] = useState('ODOO');
-  const [activeView, setActiveView] = useState<'bom' | 'iproperties' | 'products' | 'logs'>('bom');
+  const [activeView, setActiveView] = useState<ActiveView>('bom');
   const [environment, setEnvironment] = useState<InventorEnvironment>('Assembly');
   const [isTestFormOpen, setIsTestFormOpen] = useState(false);
   const [isAddinInfoOpen, setIsAddinInfoOpen] = useState(false);
@@ -40,11 +41,14 @@ export default function App() {
   useEffect(() => {
     // 1. Initial State
     fetch('/api/odoo/state')
-      .then(res => res.json())
-      .then(data => {
-        if (data.activePart) setPart(data.activePart);
-        if (data.odooProducts) setProducts(data.odooProducts);
-        if (data.syncLogs) setLogs(data.syncLogs);
+      .then(res => res.text())
+      .then(text => {
+        try {
+          const data = JSON.parse(text);
+          if (data.activePart) setPart(data.activePart);
+          if (data.odooProducts) setProducts(data.odooProducts);
+          if (data.syncLogs) setLogs(data.syncLogs);
+        } catch {}
       })
       .catch(err => {
         console.warn('Could not fetch server state:', err);
@@ -53,20 +57,24 @@ export default function App() {
     // 2. Check URL parameters (?view=..., ?session=..., ?import=...)
     const urlParams = new URLSearchParams(window.location.search);
     const viewParam = urlParams.get('view');
-    if (viewParam && ['bom', 'iproperties', 'products', 'logs'].includes(viewParam)) {
-      setActiveView(viewParam as 'bom' | 'iproperties' | 'products' | 'logs');
+    if (viewParam && ['bom', 'iproperties', 'products', 'logs', 'requisition'].includes(viewParam)) {
+      setActiveView(viewParam as ActiveView);
+      if (viewParam === 'requisition') setActiveTab('REQUISITION');
     }
 
     const sessionId = urlParams.get('session');
     if (sessionId) {
       fetch(`/api/inventor/session/${sessionId}`)
-        .then(res => res.json())
-        .then(data => {
-          if (data.success && data.session) {
-            setPart(data.session);
-            setActiveView('bom');
-            showNotification('success', `Cargado en vivo desde Inventor: ${data.session.name}`);
-          }
+        .then(res => res.text())
+        .then(text => {
+          try {
+            const data = JSON.parse(text);
+            if (data.success && data.session) {
+              setPart(data.session);
+              setActiveView('bom');
+              showNotification('success', `Cargado en vivo desde Inventor: ${data.session.name}`);
+            }
+          } catch {}
         })
         .catch(err => console.error('Error cargando sesión de Inventor:', err));
     }
@@ -228,7 +236,8 @@ export default function App() {
     const pollLatest = async () => {
       try {
         const res = await fetch('/api/inventor/latest');
-        const data = await res.json();
+        const text = await res.text();
+        const data = JSON.parse(text);
         if (data.success && data.activePart) {
           const currentTimestamp = data.activePart.lastSync || data.activePart.importedAt || '';
           if (lastKnownImportTime && currentTimestamp && currentTimestamp !== lastKnownImportTime) {
@@ -296,7 +305,9 @@ export default function App() {
           bomLines: part.bom
         })
       });
-      const data = await res.json();
+      const text = await res.text();
+      let data: any = {};
+      try { data = JSON.parse(text); } catch { data = { success: false, message: 'Respuesta inválida del servidor' }; }
       if (data.success) {
         showNotification('success', data.message);
         // Mark items as synced
@@ -312,6 +323,8 @@ export default function App() {
           details: `Lista de materiales sincronizada (${data.linesProcessed} componentes)`
         };
         setLogs(prev => [newLog, ...prev]);
+      } else {
+        showNotification('error', data.message || 'Error al sincronizar BOM');
       }
     } catch (err: any) {
       showNotification('error', `Error al sincronizar BOM: ${err.message}`);
@@ -335,7 +348,9 @@ export default function App() {
           iProperties: part.iProperties
         })
       });
-      const data = await res.json();
+      const text = await res.text();
+      let data: any = {};
+      try { data = JSON.parse(text); } catch { data = { success: false, message: 'Respuesta inválida del servidor' }; }
       if (data.success) {
         showNotification('success', data.message);
         const timestamp = new Date().toISOString().replace('T', ' ').substring(0, 19);
@@ -349,6 +364,8 @@ export default function App() {
           details: `Actualizadas iProperties en Odoo: Masa=${part.mass}kg, Costo=$${part.iProperties.StandardCost}`
         };
         setLogs(prev => [newLog, ...prev]);
+      } else {
+        showNotification('error', data.message || 'Error al enviar propiedades');
       }
     } catch (err: any) {
       showNotification('error', `Error al enviar propiedades: ${err.message}`);
@@ -418,6 +435,10 @@ export default function App() {
             onUpdateBom={handleUpdateBom}
             onSyncBomToOdoo={handleSyncBomToOdoo}
             isSyncing={isSyncing}
+            onNavigateToRequisition={() => {
+              setActiveTab('REQUISITION');
+              setActiveView('requisition');
+            }}
           />
         )}
 
@@ -435,6 +456,18 @@ export default function App() {
           <OdooProductsView
             products={products}
             odooUrl={odooUrl}
+          />
+        )}
+
+        {activeView === 'requisition' && (
+          <PurchaseRequisitionView
+            part={part}
+            odooUrl={odooUrl}
+            onGoToBom={() => {
+              setActiveTab('ODOO');
+              setActiveView('bom');
+            }}
+            onNotification={showNotification}
           />
         )}
 

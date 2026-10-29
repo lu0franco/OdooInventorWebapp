@@ -16,9 +16,7 @@ Imports Inventor
 ' =====================================================================
 Public Class InventorWebBridge
 
-    ' URL Activa de la WebApp en Google Cloud (ais-dev es el contenedor activo, NO usar ais-pre que da 404)
-    Public Const DEFAULT_WEBAPP_URL As String =
-        "https://ais-dev-42l3or3b2dxjrpc2vewuxp-636822672302.us-west2.run.app"
+
 
     ''' <summary>
     ''' Obtiene la URL configurada para la WebApp:
@@ -28,9 +26,9 @@ Public Class InventorWebBridge
     ''' 4. Servidor en la nube ais-dev por defecto (sin 404)
     ''' </summary>
     Public Shared Function GetConfiguredWebAppUrl() As String
+
+        ' 1. Detectar si el servidor local está activo en http://localhost:3000
         Try
-            ' 1. Detectar si el servidor local está activo en http://localhost:3000
-            Try
                 Using client As New HttpClient()
                     client.Timeout = TimeSpan.FromMilliseconds(450)
                     Dim resp = client.GetAsync("http://localhost:3000/api/odoo/state").Result
@@ -73,10 +71,7 @@ Public Class InventorWebBridge
                     End If
                 Next
             End If
-        Catch
-        End Try
-
-        Return DEFAULT_WEBAPP_URL
+        Return "http://localhost:3000"
     End Function
 
     Public Shared Async Function AbrirEnWebAppAsync(
@@ -120,6 +115,11 @@ Public Class InventorWebBridge
             Dim dimensions As String = "N/A"
             Dim revision As String = "Rev. 1"
             Dim author As String = "Inventor Designer"
+            Dim stockNumber As String = ""
+            Dim project As String = ""
+            Dim designer As String = ""
+            Dim vendor As String = ""
+            Dim fullFileName As String = doc.FullFileName
 
             ' 1. Leer iProperties del documento activo (Ensamblaje principal)
             Try
@@ -130,6 +130,22 @@ Public Class InventorWebBridge
                 End Try
                 Try
                     description = designProps.Item("Description").Value.ToString()
+                Catch
+                End Try
+                Try
+                    stockNumber = designProps.Item("Stock Number").Value.ToString()
+                Catch
+                End Try
+                Try
+                    project = designProps.Item("Project").Value.ToString()
+                Catch
+                End Try
+                Try
+                    designer = designProps.Item("Designer").Value.ToString()
+                Catch
+                End Try
+                Try
+                    vendor = designProps.Item("Vendor").Value.ToString()
                 Catch
                 End Try
                 Try
@@ -246,6 +262,12 @@ Public Class InventorWebBridge
                 {"assemblyName", doc.DisplayName},
                 {"partNumber", partNumber},
                 {"description", description},
+                {"stockNumber", stockNumber},
+                {"project", project},
+                {"designer", designer},
+                {"vendor", vendor},
+                {"location", fullFileName},
+                {"fullFileName", fullFileName},
                 {"revision", revision},
                 {"author", author},
                 {"material", material},

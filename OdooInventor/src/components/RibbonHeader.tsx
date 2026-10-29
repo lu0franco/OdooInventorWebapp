@@ -21,15 +21,15 @@ import {
   FileSignature
 } from 'lucide-react';
 
-import { CadPart } from '../types';
+import { CadPart, ActiveView } from '../types';
 
 export type InventorEnvironment = 'Assembly' | 'Part' | 'Drawing' | 'ZeroDoc';
 
 interface RibbonHeaderProps {
   activeTab: string;
   setActiveTab: (tab: string) => void;
-  activeView: 'bom' | 'iproperties' | 'products' | 'logs';
-  setActiveView: (view: 'bom' | 'iproperties' | 'products' | 'logs') => void;
+  activeView: ActiveView;
+  setActiveView: (view: ActiveView) => void;
   environment: InventorEnvironment;
   setEnvironment: (env: InventorEnvironment) => void;
   onOpenTestForm: () => void;
@@ -43,12 +43,12 @@ interface RibbonHeaderProps {
 }
 
 export const RibbonHeader: React.FC<RibbonHeaderProps> = ({
-  activeTab: _activeTab,
-  setActiveTab: _setActiveTab,
+  activeTab,
+  setActiveTab,
   activeView,
   setActiveView,
   environment,
-  setEnvironment,
+  setEnvironment: _setEnvironment,
   onOpenTestForm,
   onSyncBom,
   onPushProperties,
@@ -58,6 +58,8 @@ export const RibbonHeader: React.FC<RibbonHeaderProps> = ({
   odooUrl,
   part
 }) => {
+  const comCount = part?.bom ? part.bom.filter(b => b.isCom).length : 0;
+
   const getDocBadge = () => {
     switch (environment) {
       case 'Assembly':
@@ -76,6 +78,8 @@ export const RibbonHeader: React.FC<RibbonHeaderProps> = ({
   };
 
   const badge = getDocBadge();
+
+  const isRequisitionActive = activeTab === 'REQUISITION' || activeView === 'requisition';
 
   return (
     <header className="bg-slate-950 border-b border-slate-800 text-slate-200 select-none">
@@ -97,60 +101,76 @@ export const RibbonHeader: React.FC<RibbonHeaderProps> = ({
 
         {/* Quick Access & Status */}
         <div className="flex items-center space-x-3">
-          {/* Environment Switcher */}
-          <div className="flex items-center space-x-1 bg-slate-950 p-0.5 rounded border border-slate-800">
-            <span className="text-[10px] text-slate-500 px-1 font-mono uppercase">Entorno:</span>
-            {(['Assembly', 'Part', 'Drawing', 'ZeroDoc'] as InventorEnvironment[]).map(env => (
-              <button
-                key={env}
-                onClick={() => setEnvironment(env)}
-                className={`px-2 py-0.5 rounded text-[11px] font-medium transition ${
-                  environment === env 
-                    ? 'bg-orange-600 text-white shadow-sm' 
-                    : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800'
-                }`}
-                title={`Cambiar entorno CAD a ${env}`}
-              >
-                {env === 'Assembly' ? 'Ensamblaje (.iam)' :
-                 env === 'Part' ? 'Pieza (.ipt)' :
-                 env === 'Drawing' ? 'Plano (.idw)' : 'ZeroDoc'}
-              </button>
-            ))}
-          </div>
-
-          <div className="flex items-center space-x-2 pl-2 border-l border-slate-700">
-            <div className={`flex items-center space-x-1.5 px-2.5 py-0.5 rounded-full text-[11px] font-mono border ${
-              connectionState === 'connected'
-                ? 'bg-emerald-950/60 border-emerald-500/40 text-emerald-300'
-                : connectionState === 'error'
-                ? 'bg-rose-950/60 border-rose-500/40 text-rose-300'
-                : 'bg-slate-800 border-slate-700 text-slate-300'
-            }`}>
-              <span className={`w-2 h-2 rounded-full ${
-                connectionState === 'connected' ? 'bg-emerald-400 animate-pulse' :
-                connectionState === 'error' ? 'bg-rose-500' : 'bg-amber-400'
-              }`} />
-              <span className="truncate max-w-[200px]">{odooUrl.replace('https://', '')}</span>
-            </div>
+          <div className={`flex items-center space-x-1.5 px-2.5 py-0.5 rounded-full text-[11px] font-mono border ${
+            connectionState === 'connected'
+              ? 'bg-emerald-950/60 border-emerald-500/40 text-emerald-300'
+              : connectionState === 'error'
+              ? 'bg-rose-950/60 border-rose-500/40 text-rose-300'
+              : 'bg-slate-800 border-slate-700 text-slate-300'
+          }`}>
+            <span className={`w-2 h-2 rounded-full ${
+              connectionState === 'connected' ? 'bg-emerald-400 animate-pulse' :
+              connectionState === 'error' ? 'bg-rose-500' : 'bg-amber-400'
+            }`} />
+            <span className="truncate max-w-[200px]">{odooUrl.replace('https://', '')}</span>
           </div>
         </div>
       </div>
 
       {/* Tabs navigation & View switcher */}
       <div className="flex items-center justify-between px-3 pt-1 border-b border-slate-800 bg-slate-900/60 text-xs">
-        <div className="flex items-center space-x-2">
-          <div className="px-3.5 py-1.5 font-semibold text-orange-400 border-t-2 border-t-orange-500 bg-slate-850 rounded-t shadow flex items-center space-x-1.5">
+        {/* Pestañas de la barra (Tabs de Inventor / Odoo) */}
+        <div className="flex items-center space-x-1">
+          {/* Tab 1: ODOO ERP (CAD & Ensamble) */}
+          <button
+            type="button"
+            onClick={() => {
+              setActiveTab('ODOO');
+              if (activeView === 'requisition') setActiveView('bom');
+            }}
+            className={`px-3.5 py-1.5 font-semibold text-xs rounded-t flex items-center space-x-1.5 transition ${
+              !isRequisitionActive
+                ? 'text-orange-400 border-t-2 border-t-orange-500 bg-slate-850 shadow'
+                : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/40'
+            }`}
+          >
             <span>ODOO ERP</span>
             <span className="text-[9px] bg-orange-500/20 text-orange-300 px-1.5 py-0.5 rounded font-mono">
               {environment}
             </span>
-          </div>
+          </button>
+
+          {/* Tab 2: Solicitud de Compra (purchase.requisition) - Ubicación indicada con círculo rojo */}
+          <button
+            type="button"
+            onClick={() => {
+              setActiveTab('REQUISITION');
+              setActiveView('requisition');
+            }}
+            className={`px-3.5 py-1.5 font-semibold text-xs rounded-t flex items-center space-x-2 transition relative ${
+              isRequisitionActive
+                ? 'text-orange-400 border-t-2 border-t-orange-500 bg-slate-850 shadow'
+                : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/40'
+            }`}
+            title="Abrir módulo de Solicitudes de Compra en Odoo (purchase.requisition)"
+          >
+            <FileSpreadsheet className="w-3.5 h-3.5 text-orange-400" />
+            <span>Solicitud de Compra (purchase.requisition)</span>
+            {comCount > 0 && (
+              <span className="text-[9px] bg-emerald-500/20 text-emerald-300 border border-emerald-500/40 px-1.5 py-0.2 rounded font-mono font-bold">
+                {comCount} COM
+              </span>
+            )}
+          </button>
         </div>
 
         {/* View Switcher pills */}
         <div className="flex items-center space-x-1 bg-slate-950 p-0.5 rounded border border-slate-800 mb-1">
           <button
-            onClick={() => setActiveView('bom')}
+            onClick={() => {
+              setActiveTab('ODOO');
+              setActiveView('bom');
+            }}
             className={`px-3 py-1 text-xs font-semibold rounded flex items-center space-x-1.5 transition ${
               activeView === 'bom' 
                 ? 'bg-orange-600 text-white shadow-sm' 
@@ -161,7 +181,10 @@ export const RibbonHeader: React.FC<RibbonHeaderProps> = ({
             <span>Lista de Materiales (BOM / LDM)</span>
           </button>
           <button
-            onClick={() => setActiveView('iproperties')}
+            onClick={() => {
+              setActiveTab('ODOO');
+              setActiveView('iproperties');
+            }}
             className={`px-3 py-1 text-xs font-semibold rounded flex items-center space-x-1.5 transition ${
               activeView === 'iproperties' 
                 ? 'bg-orange-600 text-white shadow-sm' 
@@ -172,7 +195,10 @@ export const RibbonHeader: React.FC<RibbonHeaderProps> = ({
             <span>iProperties Ensamblaje</span>
           </button>
           <button
-            onClick={() => setActiveView('products')}
+            onClick={() => {
+              setActiveTab('ODOO');
+              setActiveView('products');
+            }}
             className={`px-3 py-1 text-xs font-medium rounded flex items-center space-x-1.5 transition ${
               activeView === 'products' 
                 ? 'bg-orange-600 text-white shadow-sm' 
@@ -182,14 +208,79 @@ export const RibbonHeader: React.FC<RibbonHeaderProps> = ({
             <Database className="w-3.5 h-3.5" />
             <span>Catálogo Odoo</span>
           </button>
+          <button
+            onClick={() => {
+              setActiveTab('REQUISITION');
+              setActiveView('requisition');
+            }}
+            className={`px-3 py-1 text-xs font-semibold rounded flex items-center space-x-1.5 transition ${
+              activeView === 'requisition' 
+                ? 'bg-orange-600 text-white shadow-sm' 
+                : 'text-slate-400 hover:text-slate-200'
+            }`}
+            title="Ir a la vista de Solicitud de Compra (purchase.requisition)"
+          >
+            <FileSpreadsheet className="w-3.5 h-3.5 text-orange-400" />
+            <span>Solicitud de Compra</span>
+          </button>
         </div>
       </div>
 
       {/* Ribbon Panels (Specific to ODOO tab & Current Environment) */}
       <div className="bg-slate-900 px-3 py-2 flex items-stretch space-x-4 overflow-x-auto min-h-[92px]">
         
-        {/* Panel ODOO de Comandos */}
-        <div className="flex flex-col justify-between pr-4">
+        {isRequisitionActive ? (
+          /* Panel Comandos Solicitud de Compra */
+          <div className="flex flex-col justify-between pr-4">
+            <div className="flex items-center space-x-2">
+              <button
+                onClick={() => setActiveView('requisition')}
+                className="group flex flex-col items-center justify-center px-4 py-1.5 bg-gradient-to-b from-orange-500 to-orange-600 hover:from-orange-400 hover:to-orange-500 text-white rounded-md shadow-md active:scale-95 transition min-w-[100px]"
+                title="Generar nueva solicitud de compra purchase.requisition en Odoo"
+              >
+                <FileSpreadsheet className="w-6 h-6 object-contain mb-0.5 group-hover:scale-110 transition drop-shadow" />
+                <span className="text-xs font-bold leading-tight">Nueva Solicitud</span>
+                <span className="text-[9px] text-orange-100 font-mono">purchase.requisition</span>
+              </button>
+
+              <button
+                onClick={() => setActiveView('bom')}
+                className="flex flex-col items-center justify-center px-3.5 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs rounded border border-slate-700 transition min-w-[90px]"
+                title="Ver y seleccionar piezas comerciales (COM) en la LDM"
+              >
+                <Layers className="w-6 h-6 object-contain mb-0.5 text-orange-400" />
+                <span className="font-semibold text-[11px] leading-tight text-center">Ver Piezas COM</span>
+                <span className="text-[9px] text-slate-400 font-mono">{comCount} marcadas</span>
+              </button>
+
+              <button
+                onClick={() => setActiveView('products')}
+                className="flex flex-col items-center justify-center px-3.5 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs rounded border border-slate-700 transition min-w-[90px]"
+                title="Consultar catálogo de productos y referencias en Odoo"
+              >
+                <Database className="w-6 h-6 object-contain mb-0.5 text-slate-300" />
+                <span className="font-semibold text-[11px] leading-tight text-center">Catálogo Odoo</span>
+                <span className="text-[9px] text-slate-400 font-mono">product.product</span>
+              </button>
+
+              <button
+                onClick={onOpenTestForm}
+                className="flex flex-col items-center justify-center px-3.5 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs rounded border border-slate-700 transition min-w-[90px]"
+                title="Diagnóstico de conexión JSON-RPC"
+              >
+                <img src="/icons/icon_odoo_test_32x32.png" alt="Test" className="w-6 h-6 object-contain mb-0.5" />
+                <span className="font-semibold text-[11px] leading-tight text-center">Probar Conexión</span>
+                <span className="text-[9px] text-slate-400 font-mono">JSON-RPC</span>
+              </button>
+            </div>
+
+            <span className="text-[10px] font-semibold text-slate-500 uppercase tracking-wider text-center mt-1">
+              Comandos Solicitudes de Compra (purchase.requisition)
+            </span>
+          </div>
+        ) : (
+          /* Panel ODOO de Comandos CAD */
+          <div className="flex flex-col justify-between pr-4">
           <div className="flex items-center space-x-2">
 
             {/* ENVIRONMENT: Assembly (.iam) */}
@@ -338,6 +429,7 @@ export const RibbonHeader: React.FC<RibbonHeaderProps> = ({
             Comandos Odoo ERP
           </span>
         </div>
+        )}
       </div>
     </header>
   );

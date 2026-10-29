@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import { 
   Scale, 
   FileCode, 
@@ -12,7 +12,9 @@ import {
   UploadCloud, 
   Check, 
   AlertCircle,
-  FileSpreadsheet
+  FileSpreadsheet,
+  ArrowRight,
+  ExternalLink
 } from 'lucide-react';
 import { CadPart } from '../types';
 
@@ -32,10 +34,34 @@ export const AssemblyPropertiesView: React.FC<AssemblyPropertiesViewProps> = ({
   onGoToBom
 }) => {
   const [isEditing, setIsEditing] = useState(false);
-  const [propsState, setPropsState] = useState(part.iProperties);
+
+  const defaultIProps = useMemo(() => ({
+    Title: part.iProperties?.Title || part.name || 'SEPARADOR DE SOLIDOS_R4.iam (ANTIGUO)',
+    Subject: part.iProperties?.Subject || 'OT-26282',
+    Company: part.iProperties?.Company || 'FINCA BONI',
+    Manager: part.iProperties?.Manager || 'FL',
+    CostCenter: part.iProperties?.CostCenter || 'CC-ING-01',
+    StandardCost: part.iProperties?.StandardCost ?? 0,
+    StockLocation: part.iProperties?.StockLocation || 'WH/Stock',
+    PartNumber: part.iProperties?.PartNumber || part.partNumber || 'SEPARADOR DE SOLIDOS',
+    StockNumber: part.iProperties?.StockNumber || 'OT-26282.04',
+    Project: part.iProperties?.Project || 'OT-26282',
+    Designer: part.iProperties?.Designer || 'FL',
+    Vendor: part.iProperties?.Vendor || 'FINCA BONI',
+    Location: part.iProperties?.Location || 'D:\\PROYECTOS\\OT-24019 - D.606.B V2\\01 - DIBUJOS\\MODIFICACIONES\\SEPARADOR ESTATICO\\SEPARADOR DE SOLIDOS_R4.iam'
+  }), [part]);
+
+  const [propsState, setPropsState] = useState(defaultIProps);
   const [tempMass, setTempMass] = useState(part.mass.toString());
   const [tempMaterial, setTempMaterial] = useState(part.material);
   const [tempDimensions, setTempDimensions] = useState(part.dimensions);
+
+  useEffect(() => {
+    setPropsState(defaultIProps);
+    setTempMass(part.mass.toString());
+    setTempMaterial(part.material);
+    setTempDimensions(part.dimensions);
+  }, [defaultIProps, part]);
 
   const handleSave = () => {
     onUpdatePart({
@@ -166,72 +192,140 @@ export const AssemblyPropertiesView: React.FC<AssemblyPropertiesViewProps> = ({
           </div>
         </div>
 
-        {/* Card 2: Metadatos de Proyecto & Orden de Trabajo */}
+        {/* Card 2: DATOS DE PROYECTO (iProperties de Proyecto - RuleManager V2) */}
         <div className="bg-slate-900 border border-slate-800 rounded-xl p-5 space-y-4 shadow-sm">
           <div className="flex items-center justify-between pb-3 border-b border-slate-800">
             <div className="flex items-center space-x-2 text-blue-400 font-bold text-xs uppercase tracking-wider">
               <FileCode className="w-4 h-4" />
-              <span>Proyecto e iProperties</span>
+              <span>Datos de Proyecto (iProperties)</span>
             </div>
-            <span className="text-[10px] text-slate-500 font-mono">Inventor Summary</span>
+            <span className="text-[10px] text-emerald-400 font-mono font-semibold bg-emerald-500/10 px-2 py-0.5 rounded border border-emerald-500/20">
+              RuleManager V2
+            </span>
           </div>
 
-          <div className="space-y-3 text-xs">
+          {/* Document path from RuleManager / iProperties */}
+          <div className="p-2.5 rounded-lg bg-slate-950 border border-slate-850 space-y-1">
+            <div className="flex items-center space-x-1.5 text-[11px] font-bold text-slate-200">
+              <span className="text-blue-400">Documento:</span>
+              <span className="font-mono text-cyan-300 truncate">{part.name}</span>
+            </div>
+            <div className="text-[10px] font-mono text-slate-400 truncate" title={propsState.Location}>
+              {propsState.Location || 'D:\\PROYECTOS\\OT-24019 - D.606.B V2\\01 - DIBUJOS\\SEPARADOR DE SOLIDOS_R4.iam'}
+            </div>
+          </div>
+
+          <div className="space-y-2.5 text-xs">
+            {/* Nº de pieza (Púrpura) */}
             <div>
-              <span className="text-slate-400 block text-[11px] mb-1">Título / Denominación:</span>
+              <div className="flex items-center justify-between mb-1">
+                <span className="text-slate-300 font-semibold text-[11px]">Nº de pieza:</span>
+                <span className="text-[10px] font-mono px-1.5 py-0.2 rounded bg-purple-500/20 text-purple-300 border border-purple-500/40">
+                  🟣 Odoo: Referencia
+                </span>
+              </div>
               {isEditing ? (
                 <input
                   type="text"
-                  value={propsState.Title}
-                  onChange={(e) => setPropsState({ ...propsState, Title: e.target.value })}
-                  className="w-full bg-slate-950 border border-slate-700 rounded px-2.5 py-1.5 text-slate-200"
+                  value={propsState.PartNumber}
+                  onChange={(e) => setPropsState({ ...propsState, PartNumber: e.target.value })}
+                  className="w-full bg-slate-950 border border-purple-500/80 rounded px-2.5 py-1.5 font-bold font-mono text-purple-200"
                 />
               ) : (
-                <div className="font-semibold text-slate-100 bg-slate-950 px-3 py-2 rounded border border-slate-800/80">
-                  {propsState.Title}
+                <div className="font-mono font-bold text-sm text-purple-200 bg-purple-950/30 px-3 py-2 rounded-lg border-2 border-purple-500/70 shadow-sm">
+                  {propsState.PartNumber}
                 </div>
               )}
             </div>
 
+            {/* Nº de almacenamiento (Amarillo) */}
             <div>
-              <span className="text-slate-400 block text-[11px] mb-1">Asunto / Orden de Trabajo (OT):</span>
+              <div className="flex items-center justify-between mb-1">
+                <span className="text-slate-300 font-semibold text-[11px]">Nº de almacenamiento:</span>
+                <span className="text-[10px] font-mono px-1.5 py-0.2 rounded bg-amber-500/20 text-amber-300 border border-amber-500/40">
+                  🟡 Odoo: Descripción
+                </span>
+              </div>
               {isEditing ? (
                 <input
                   type="text"
-                  value={propsState.Subject}
-                  onChange={(e) => setPropsState({ ...propsState, Subject: e.target.value })}
-                  className="w-full bg-slate-950 border border-slate-700 rounded px-2.5 py-1.5 text-slate-200"
+                  value={propsState.StockNumber}
+                  onChange={(e) => setPropsState({ ...propsState, StockNumber: e.target.value })}
+                  className="w-full bg-slate-950 border border-amber-500/80 rounded px-2.5 py-1.5 font-bold font-mono text-amber-200"
                 />
               ) : (
-                <div className="text-slate-200 bg-slate-950 px-3 py-2 rounded border border-slate-800/80">
-                  {propsState.Subject}
+                <div className="font-mono font-bold text-sm text-amber-200 bg-amber-950/30 px-3 py-2 rounded-lg border-2 border-amber-500/70 shadow-sm">
+                  {propsState.StockNumber}
                 </div>
               )}
             </div>
 
-            <div>
-              <span className="text-slate-400 block text-[11px] mb-1">Empresa / Cliente:</span>
-              <div className="text-slate-200 bg-slate-950 px-3 py-2 rounded border border-slate-800/80 flex items-center space-x-2">
-                <Building2 className="w-3.5 h-3.5 text-slate-400" />
-                <span>{propsState.Company}</span>
+            {/* Proyecto (OT) (Rojo) y Diseñador (Azul) */}
+            <div className="grid grid-cols-2 gap-2.5">
+              <div>
+                <div className="flex items-center justify-between mb-1">
+                  <span className="text-slate-300 font-semibold text-[11px]">Proyecto (OT):</span>
+                  <span className="text-[10px] font-mono px-1 rounded bg-rose-500/20 text-rose-300 border border-rose-500/40">
+                    🔴 Prefijo
+                  </span>
+                </div>
+                {isEditing ? (
+                  <input
+                    type="text"
+                    value={propsState.Project}
+                    onChange={(e) => setPropsState({ ...propsState, Project: e.target.value })}
+                    className="w-full bg-slate-950 border border-rose-500/80 rounded px-2.5 py-1.5 font-bold font-mono text-rose-200"
+                  />
+                ) : (
+                  <div className="font-mono font-bold text-sm text-rose-200 bg-rose-950/30 px-3 py-2 rounded-lg border-2 border-rose-500/70 text-center shadow-sm">
+                    {propsState.Project}
+                  </div>
+                )}
+              </div>
+
+              <div>
+                <div className="flex items-center justify-between mb-1">
+                  <span className="text-slate-300 font-semibold text-[11px]">Diseñador:</span>
+                  <span className="text-[10px] font-mono px-1 rounded bg-blue-500/20 text-blue-300 border border-blue-500/40">
+                    🔵 Autorizador
+                  </span>
+                </div>
+                {isEditing ? (
+                  <input
+                    type="text"
+                    value={propsState.Designer}
+                    onChange={(e) => setPropsState({ ...propsState, Designer: e.target.value })}
+                    className="w-full bg-slate-950 border border-blue-500/80 rounded px-2.5 py-1.5 font-bold font-mono text-blue-200 text-center"
+                  />
+                ) : (
+                  <div className="font-mono font-bold text-sm text-blue-200 bg-blue-950/30 px-3 py-2 rounded-lg border-2 border-blue-500/70 text-center shadow-sm">
+                    {propsState.Designer}
+                  </div>
+                )}
               </div>
             </div>
 
-            <div className="grid grid-cols-2 gap-2">
-              <div>
-                <span className="text-slate-400 block text-[11px] mb-1">Autor CAD:</span>
-                <div className="text-slate-300 bg-slate-950 px-2.5 py-2 rounded border border-slate-800/80 flex items-center space-x-1.5 truncate">
-                  <User className="w-3 h-3 text-slate-400 shrink-0" />
-                  <span className="truncate">{part.author}</span>
+            {/* Proveedor / Cliente */}
+            <div>
+              <span className="text-slate-300 font-semibold block text-[11px] mb-1">Proveedor / Cliente:</span>
+              {isEditing ? (
+                <input
+                  type="text"
+                  value={propsState.Vendor}
+                  onChange={(e) => setPropsState({ ...propsState, Vendor: e.target.value })}
+                  className="w-full bg-slate-950 border border-slate-700 rounded px-2.5 py-1.5 text-slate-100"
+                />
+              ) : (
+                <div className="text-slate-100 font-semibold bg-slate-950 px-3 py-2 rounded-lg border border-slate-800 flex items-center space-x-2">
+                  <Building2 className="w-3.5 h-3.5 text-orange-400 shrink-0" />
+                  <span>{propsState.Vendor}</span>
                 </div>
-              </div>
-              <div>
-                <span className="text-slate-400 block text-[11px] mb-1">Revisión:</span>
-                <div className="font-mono text-orange-400 bg-slate-950 px-2.5 py-2 rounded border border-slate-800/80 font-bold text-center">
-                  {part.revision}
-                </div>
-              </div>
+              )}
             </div>
+
+            <p className="text-[10px] text-slate-500 italic pt-1 leading-snug">
+              Nota: Estos campos alimentan las Listas de Materiales, Carátulas y Planos en la carpeta del proyecto y la Solicitud de Compra en Odoo.
+            </p>
           </div>
         </div>
 
@@ -299,6 +393,81 @@ export const AssemblyPropertiesView: React.FC<AssemblyPropertiesViewProps> = ({
           </div>
         </div>
 
+      </div>
+
+      {/* Visual Odoo ERP Linkage Guide (Mapping matching user colors) */}
+      <div className="bg-slate-900 border border-slate-800 rounded-xl p-5 shadow-md">
+        <div className="flex items-center justify-between pb-3 border-b border-slate-800 mb-4">
+          <div className="flex items-center space-x-2">
+            <span className="w-2.5 h-2.5 rounded-full bg-emerald-400 animate-pulse"></span>
+            <h2 className="text-xs font-bold uppercase tracking-wider text-slate-200">
+              Mapeo de Datos iProperties ➔ Odoo ERP (purchase.request)
+            </h2>
+          </div>
+          <span className="text-[11px] font-mono text-slate-400">
+            Campos sincronizados con el ERP Deblasi S.A.
+          </span>
+        </div>
+
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+          {/* Mapping 1: Referencia */}
+          <div className="p-3.5 rounded-lg bg-slate-950/70 border border-slate-800 space-y-2">
+            <div className="text-[11px] font-bold text-slate-400 flex items-center justify-between">
+              <span>Campo Odoo:</span>
+              <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-slate-800 text-slate-300">
+                Referencia de Solicitud
+              </span>
+            </div>
+            <div className="flex items-center space-x-1.5 flex-wrap">
+              <span className="px-2 py-1 rounded bg-rose-500/20 text-rose-300 border border-rose-500/50 font-mono font-bold text-xs">
+                🔴 {propsState.Project}
+              </span>
+              <span className="text-slate-500 font-bold">-</span>
+              <span className="px-2 py-1 rounded bg-purple-500/20 text-purple-300 border border-purple-500/50 font-mono font-bold text-xs">
+                🟣 {propsState.PartNumber}
+              </span>
+            </div>
+            <p className="text-[10px] text-slate-400 leading-tight">
+              Combina el <strong>Proyecto (OT)</strong> con el <strong>Nº de pieza</strong> del ensamble de Inventor.
+            </p>
+          </div>
+
+          {/* Mapping 2: Descripción */}
+          <div className="p-3.5 rounded-lg bg-slate-950/70 border border-slate-800 space-y-2">
+            <div className="text-[11px] font-bold text-slate-400 flex items-center justify-between">
+              <span>Campo Odoo:</span>
+              <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-slate-800 text-slate-300">
+                Descripción
+              </span>
+            </div>
+            <div>
+              <span className="px-2.5 py-1 rounded bg-amber-500/20 text-amber-300 border border-amber-500/50 font-mono font-bold text-xs inline-block">
+                🟡 {propsState.StockNumber}
+              </span>
+            </div>
+            <p className="text-[10px] text-slate-400 leading-tight">
+              Mapeado directamente desde el <strong>Nº de almacenamiento</strong> de las iProperties de Inventor.
+            </p>
+          </div>
+
+          {/* Mapping 3: Autorizador */}
+          <div className="p-3.5 rounded-lg bg-slate-950/70 border border-slate-800 space-y-2">
+            <div className="text-[11px] font-bold text-slate-400 flex items-center justify-between">
+              <span>Campo Odoo:</span>
+              <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-slate-800 text-slate-300">
+                Autorizador / Diseñador
+              </span>
+            </div>
+            <div>
+              <span className="px-2.5 py-1 rounded bg-blue-500/20 text-blue-300 border border-blue-500/50 font-mono font-bold text-xs inline-block">
+                🔵 {propsState.Designer}
+              </span>
+            </div>
+            <p className="text-[10px] text-slate-400 leading-tight">
+              Mapeado desde el campo <strong>Diseñador</strong> para asignación del responsable en el flujo de aprobación.
+            </p>
+          </div>
+        </div>
       </div>
 
       {isEditing && (

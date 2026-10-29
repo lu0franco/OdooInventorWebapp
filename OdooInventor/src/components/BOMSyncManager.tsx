@@ -39,6 +39,7 @@ interface BOMSyncManagerProps {
   isSyncing: boolean;
   onLoadPart?: (part: CadPart) => void;
   onClearPart?: () => void;
+  onNavigateToRequisition?: () => void;
 }
 
 export const BOMSyncManager: React.FC<BOMSyncManagerProps> = ({
@@ -47,7 +48,8 @@ export const BOMSyncManager: React.FC<BOMSyncManagerProps> = ({
   onSyncBomToOdoo,
   isSyncing,
   onLoadPart,
-  onClearPart
+  onClearPart,
+  onNavigateToRequisition
 }) => {
   const [searchTerm, setSearchTerm] = useState('');
   const [newItemModal, setNewItemModal] = useState(false);
@@ -660,7 +662,9 @@ export const BOMSyncManager: React.FC<BOMSyncManagerProps> = ({
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ presetId: 'flamarique' })
       });
-      const data = await res.json();
+      const text = await res.text();
+      let data: any = {};
+      try { data = JSON.parse(text); } catch { data = {}; }
       if (data.success && data.part) {
         if (onLoadPart) {
           onLoadPart(data.part);
@@ -676,8 +680,8 @@ export const BOMSyncManager: React.FC<BOMSyncManagerProps> = ({
     }
   };
 
-  const handleCreatePurchaseOrder = async (e: React.FormEvent) => {
-    e.preventDefault();
+  const handleCreatePurchaseOrder = async (e?: React.FormEvent, forceSimulation = false) => {
+    if (e) e.preventDefault();
     if (!part) return;
     setIsCreatingPo(true);
     setPoResult(null);
@@ -689,54 +693,81 @@ export const BOMSyncManager: React.FC<BOMSyncManagerProps> = ({
     if (itemsToUpload.length === 0) {
       setPoResult({
         success: false,
-        message: 'No hay piezas con el tick COM activo para generar la orden de compra. Activá el tick COM en las filas deseadas o desmarcá la opción de subir solo COM.'
+        message: 'No hay piezas con el tick COM activo para generar la solicitud. Activá el tick COM en las filas deseadas o desmarcá la opción de subir solo COM.'
       });
       setIsCreatingPo(false);
       return;
     }
 
-    if (poDb.trim()) localStorage.setItem('odoo_auth_db', poDb.trim());
-    if (poLogin.trim()) localStorage.setItem('odoo_auth_login', poLogin.trim());
-    if (poApiKey) localStorage.setItem('odoo_auth_pwd', poApiKey);
+    if (!forceSimulation) {
+      if (poDb.trim()) localStorage.setItem('odoo_auth_db', poDb.trim());
+      if (poLogin.trim()) localStorage.setItem('odoo_auth_login', poLogin.trim());
+      if (poApiKey) localStorage.setItem('odoo_auth_pwd', poApiKey);
+    }
 
     try {
-      const res = await fetch('/api/odoo/create-purchase-order', {
+      const res = await fetch('/api/odoo/create-purchase-requisition', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          url: 'https://deblasi.adhoc.ar',
-          db: poDb.trim(),
-          login: poLogin.trim(),
-          apiKey: poApiKey.trim(),
-          partnerId: Number(poPartnerId) || 1,
+          url: forceSimulation ? '' : 'https://deblasi.adhoc.ar',
+          db: forceSimulation ? '' : poDb.trim(),
+          login: forceSimulation ? '' : poLogin.trim(),
+          apiKey: forceSimulation ? '' : poApiKey.trim(),
           origin: poOnlyCom 
             ? `Inventor LDM ${part.partNumber} [COM: ${itemsToUpload.length} ítems]`
             : `Inventor LDM ${part.partNumber}`,
           items: itemsToUpload.map(b => ({
             partNumber: b.partNumber,
             description: b.description,
-            qty: b.qty
+            qty: b.qty,
+            uom: b.uom,
+            isCom: b.isCom
           }))
         })
       });
-      const data = await res.json();
-      if (data.success) {
+
+      const responseText = await res.text();
+      let data: any = null;
+      try {
+        data = JSON.parse(responseText);
+      } catch {
+        throw new Error(`El servidor devolvió una respuesta no válida (HTTP ${res.status}): ${responseText.substring(0, 100)}`);
+      }
+
+      if (data && data.success) {
         setPoResult({
           success: true,
           message: data.message + (poOnlyCom ? ` (${itemsToUpload.length} ítems con tick COM)` : ''),
-          orderName: data.orderName
+          orderName: data.requisitionName || data.orderName
+        });
+      } else if (forceSimulation) {
+        const fakeName = `REQ2027-${Math.floor(1000 + Math.random() * 9000)}`;
+        setPoResult({
+          success: true,
+          message: `¡Solicitud ${fakeName} (purchase.requisition) creada en modo simulación! (${itemsToUpload.length} ítems)`,
+          orderName: fakeName
         });
       } else {
         setPoResult({
           success: false,
-          message: data.error || 'Error al generar pedido de compra'
+          message: data?.error || 'Error al generar la solicitud de compra (purchase.requisition)'
         });
       }
     } catch (err: any) {
-      setPoResult({
-        success: false,
-        message: err.message || 'Error de red'
-      });
+      if (forceSimulation) {
+        const fakeName = `REQ2027-${Math.floor(1000 + Math.random() * 9000)}`;
+        setPoResult({
+          success: true,
+          message: `¡Solicitud ${fakeName} (purchase.requisition) creada en modo simulación! (${itemsToUpload.length} ítems)`,
+          orderName: fakeName
+        });
+      } else {
+        setPoResult({
+          success: false,
+          message: err.message || 'Error de red o comunicación con el servidor Odoo.'
+        });
+      }
     } finally {
       setIsCreatingPo(false);
     }
@@ -1442,10 +1473,10 @@ End Sub`;
               <button
                 onClick={() => setIsPoModalOpen(true)}
                 className="px-3 py-1 bg-emerald-700 hover:bg-emerald-600 text-white font-bold text-xs rounded border border-emerald-500/50 flex items-center space-x-1.5 shadow transition"
-                title="Generar pedido de compra en Odoo (purchase.order). Filtra por componentes con tick en COM."
+                title="Generar Solicitud de Compra en Odoo (purchase.requisition). Filtra por componentes con tick en COM."
               >
-                <ShoppingCart className="w-3.5 h-3.5 text-emerald-200" />
-                <span>Crear Pedido de Compra (PO)</span>
+                <FileSpreadsheet className="w-3.5 h-3.5 text-emerald-200" />
+                <span>Solicitud de Compra (purchase.requisition)</span>
                 <span className="px-1.5 py-0.2 rounded bg-emerald-950 text-emerald-200 font-mono text-[10px] border border-emerald-600">
                   {comCount} COM
                 </span>
@@ -2079,13 +2110,13 @@ End Sub`;
           <div className="bg-slate-900 border border-slate-800 rounded-xl p-5 w-full max-w-xl shadow-2xl space-y-4 max-h-[90vh] flex flex-col">
             <div className="flex items-center justify-between border-b border-slate-800 pb-3 shrink-0">
               <div className="flex items-center space-x-2 text-emerald-400">
-                <ShoppingCart className="w-5 h-5 shrink-0" />
+                <FileSpreadsheet className="w-5 h-5 shrink-0" />
                 <div>
                   <h3 className="text-sm font-bold text-slate-100">
-                    Generar Pedido de Compra en Odoo (purchase.order)
+                    Generar Solicitud de Compra en Odoo (purchase.requisition)
                   </h3>
                   <p className="text-[11px] text-slate-400 font-normal">
-                    Filtro exclusivo para subir al PO solo las piezas y ensamblajes con tick en COM
+                    Filtro exclusivo para generar la solicitud con las piezas y ensamblajes con tick en COM
                   </p>
                 </div>
               </div>
@@ -2101,10 +2132,10 @@ End Sub`;
                 <div className="flex items-center justify-between">
                   <span className="text-slate-200 font-bold flex items-center space-x-1.5">
                     <Filter className="w-4 h-4 text-emerald-400" />
-                    <span>Filtro de Artículos para la Orden de Compra:</span>
+                    <span>Filtro de Artículos para la Solicitud de Compra (purchase.requisition):</span>
                   </span>
                   <span className="text-[11px] font-mono px-2 py-0.5 rounded bg-emerald-500/10 text-emerald-300 border border-emerald-500/30">
-                    {itemsToUpload.length} seleccionados para PO
+                    {itemsToUpload.length} seleccionados para Solicitud
                   </span>
                 </div>
 
@@ -2199,7 +2230,7 @@ End Sub`;
               <div className="space-y-1.5">
                 <div className="flex items-center justify-between text-xs font-semibold text-slate-300">
                   <span className="flex items-center space-x-1">
-                    <span>Artículos a incluir en la Orden de Compra:</span>
+                    <span>Artículos a incluir en la Solicitud de Compra (purchase.requisition):</span>
                     <span className="font-bold text-emerald-400">
                       ({itemsToUpload.length} de {bomList.length})
                     </span>
@@ -2214,7 +2245,7 @@ End Sub`;
                 <div className="max-h-36 overflow-y-auto border border-slate-800 rounded-lg bg-slate-950 divide-y divide-slate-850 text-[11px]">
                   {itemsToUpload.length === 0 ? (
                     <div className="p-4 text-center text-slate-500 italic">
-                      Ningún componente seleccionado para subir al PO.
+                      Ningún componente seleccionado para subir a la Solicitud de Compra.
                     </div>
                   ) : (
                     itemsToUpload.map((item) => (
@@ -2240,31 +2271,18 @@ End Sub`;
                 </div>
               </div>
 
-              {/* Credenciales Odoo */}
+              {/* Credenciales Odoo (sin requerir ID Proveedor para purchase.requisition) */}
               <div className="grid grid-cols-2 gap-3 pt-1 border-t border-slate-800">
                 <div>
                   <label className="text-slate-400 block mb-1">Base de Datos Odoo:</label>
                   <input
                     type="text"
-                    placeholder="ej. deblasi_prod"
+                    placeholder="ej. odoo o deblasi"
                     value={poDb}
                     onChange={(e) => setPoDb(e.target.value)}
                     className="w-full px-2.5 py-1.5 bg-slate-950 border border-slate-700 rounded text-slate-100 font-mono text-xs"
                   />
                 </div>
-                <div>
-                  <label className="text-slate-400 block mb-1">ID Proveedor (res.partner):</label>
-                  <input
-                    type="number"
-                    placeholder="1"
-                    value={poPartnerId}
-                    onChange={(e) => setPoPartnerId(e.target.value)}
-                    className="w-full px-2.5 py-1.5 bg-slate-950 border border-slate-700 rounded text-slate-100 font-mono text-xs"
-                  />
-                </div>
-              </div>
-
-              <div className="grid grid-cols-2 gap-3">
                 <div>
                   <label className="text-slate-400 block mb-1">Usuario / Email Odoo:</label>
                   <input
@@ -2275,27 +2293,28 @@ End Sub`;
                     className="w-full px-2.5 py-1.5 bg-slate-950 border border-slate-700 rounded text-slate-100 font-mono text-xs"
                   />
                 </div>
-                <div>
-                  <label className="text-slate-400 block mb-1">API Key / Contraseña:</label>
-                  <input
-                    type="password"
-                    placeholder="••••••••••••••••"
-                    value={poApiKey}
-                    onChange={(e) => setPoApiKey(e.target.value)}
-                    className="w-full px-2.5 py-1.5 bg-slate-950 border border-slate-700 rounded text-slate-100 font-mono text-xs"
-                  />
-                </div>
+              </div>
+
+              <div>
+                <label className="text-slate-400 block mb-1">API Key / Contraseña Odoo:</label>
+                <input
+                  type="password"
+                  placeholder="••••••••••••••••"
+                  value={poApiKey}
+                  onChange={(e) => setPoApiKey(e.target.value)}
+                  className="w-full px-2.5 py-1.5 bg-slate-950 border border-slate-700 rounded text-slate-100 font-mono text-xs"
+                />
               </div>
 
               <div className="p-2.5 bg-slate-950/70 rounded border border-slate-800 text-[11px] text-slate-400 space-y-1">
                 <span className="font-semibold text-slate-300">Modo de prueba:</span>
                 <p>
-                  Si dejás los campos vacíos, se creará un pedido en <b>modo simulación</b> con los ítems filtrados. Si ingresás tus credenciales, se enviará directo a tu Odoo en <code>deblasi.adhoc.ar</code>.
+                  Si dejás los campos vacíos, se creará una solicitud en <b>modo simulación</b> con los ítems filtrados. Si ingresás tus credenciales, se enviará directo a tu Odoo en <code>deblasi.adhoc.ar</code>.
                 </p>
               </div>
 
               {poResult && (
-                <div className={`p-3 rounded-lg border text-xs font-mono ${
+                <div className={`p-3 rounded-lg border text-xs font-mono space-y-2 ${
                   poResult.success 
                     ? 'bg-emerald-950/80 text-emerald-200 border-emerald-800' 
                     : 'bg-rose-950/80 text-rose-200 border-rose-800'
@@ -2305,33 +2324,73 @@ End Sub`;
                     <span>{poResult.message}</span>
                   </div>
                   {poResult.orderName && (
-                    <div className="mt-1 text-[11px] text-slate-300">
-                      Identificador de orden: <b>{poResult.orderName}</b> (Listo para confirmar en Odoo Compras).
+                    <div className="text-[11px] text-slate-300">
+                      Identificador de solicitud: <b>{poResult.orderName}</b> (Creada en Odoo Compras / Licitaciones).
+                    </div>
+                  )}
+                  {!poResult.success && (
+                    <div className="flex items-center space-x-2 pt-1.5 border-t border-rose-800/60">
+                      <button
+                        type="button"
+                        onClick={() => handleCreatePurchaseOrder(undefined, true)}
+                        className="px-2.5 py-1 bg-rose-800 hover:bg-rose-700 text-white rounded text-[11px] font-sans font-semibold transition"
+                      >
+                        ⚡ Generar en Modo Simulación
+                      </button>
+                      {onNavigateToRequisition && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setIsPoModalOpen(false);
+                            onNavigateToRequisition();
+                          }}
+                          className="px-2.5 py-1 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded text-[11px] font-sans transition flex items-center space-x-1"
+                        >
+                          <span>Ir a Tabla Completa</span>
+                          <ArrowRight className="w-3 h-3" />
+                        </button>
+                      )}
                     </div>
                   )}
                 </div>
               )}
 
-              <div className="flex items-center justify-end space-x-2 pt-3 border-t border-slate-800 shrink-0">
-                <button
-                  type="button"
-                  onClick={() => setIsPoModalOpen(false)}
-                  className="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded"
-                >
-                  Cerrar
-                </button>
-                <button
-                  type="submit"
-                  disabled={isCreatingPo || itemsToUpload.length === 0}
-                  className="px-4 py-1.5 bg-emerald-600 hover:bg-emerald-500 active:bg-emerald-700 text-white font-semibold rounded shadow flex items-center space-x-1.5 disabled:opacity-50"
-                >
-                  <Send className="w-3.5 h-3.5" />
-                  <span>
-                    {isCreatingPo 
-                      ? 'Enviando a Odoo...' 
-                      : `Crear Pedido de Compra (${itemsToUpload.length} ítems)`}
-                  </span>
-                </button>
+              <div className="flex items-center justify-between pt-3 border-t border-slate-800 shrink-0">
+                {onNavigateToRequisition ? (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setIsPoModalOpen(false);
+                      onNavigateToRequisition();
+                    }}
+                    className="text-xs text-orange-400 hover:text-orange-300 flex items-center space-x-1"
+                  >
+                    <span>Abrir en Tabla Completa con Búsqueda Odoo</span>
+                    <ArrowRight className="w-3.5 h-3.5" />
+                  </button>
+                ) : <div />}
+
+                <div className="flex items-center space-x-2">
+                  <button
+                    type="button"
+                    onClick={() => setIsPoModalOpen(false)}
+                    className="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded"
+                  >
+                    Cerrar
+                  </button>
+                  <button
+                    type="submit"
+                    disabled={isCreatingPo || itemsToUpload.length === 0}
+                    className="px-4 py-1.5 bg-emerald-600 hover:bg-emerald-500 active:bg-emerald-700 text-white font-semibold rounded shadow flex items-center space-x-1.5 disabled:opacity-50"
+                  >
+                    <Send className="w-3.5 h-3.5" />
+                    <span>
+                      {isCreatingPo 
+                        ? 'Enviando a Odoo...' 
+                        : `Crear Solicitud de Compra (${itemsToUpload.length} ítems)`}
+                    </span>
+                  </button>
+                </div>
               </div>
 
             </form>
