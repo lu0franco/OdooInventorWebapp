@@ -22,7 +22,7 @@ Public Class InventorWebBridge
     ''' Dirección única y determinista de la WebApp local.
     ''' Conecta exclusivamente a http://localhost:3000. No busca .ini ni variables de entorno.
     ''' </summary>
-    Public Const LocalhostUrl As String = "http://localhost:3000"
+    Public Const LocalhostUrl As String = "http://192.168.0.229:3000"
 
     Public Shared Function GetConfiguredWebAppUrl() As String
         Return LocalhostUrl
@@ -256,7 +256,7 @@ Public Class InventorWebBridge
             End Try
 
             ' 5. Transmitir determinísticamente a la WebApp local en http://localhost:3000
-            Dim endpointUrl As String = "http://localhost:3000/api/inventor/import-session"
+            Dim endpointUrl As String = "http://localhost:3000api/inventor/import-session"
             Dim sessionId As String = ""
 
             Try
@@ -268,7 +268,7 @@ Public Class InventorWebBridge
                     If Not response.IsSuccessStatusCode Then
                         MessageBox.Show(
                             "Error al transmitir LDM a la WebApp local:" & System.Environment.NewLine & System.Environment.NewLine &
-                            "El servidor en http://localhost:3000 respondió con código " & CInt(response.StatusCode) & " (" & response.ReasonPhrase & ")." & System.Environment.NewLine & System.Environment.NewLine &
+                            "El servidor en http://192.168.0.229:3000 respondió con código " & CInt(response.StatusCode) & " (" & response.ReasonPhrase & ")." & System.Environment.NewLine & System.Environment.NewLine &
                             "No se abrirá el navegador para evitar estados inconsistentes.",
                             "OdooInventor — Error HTTP en localhost:3000",
                             MessageBoxButtons.OK,
@@ -286,7 +286,7 @@ Public Class InventorWebBridge
             Catch ex As Exception
                 ' Si localhost:3000 no responde, FALLAR DETERMINÍSTICAMENTE SIN ABRIR NINGÚN NAVEGADOR
                 MessageBox.Show(
-                    "No se pudo conectar con la WebApp local en http://localhost:3000." & System.Environment.NewLine & System.Environment.NewLine &
+                    "No se pudo conectar con la WebApp local en http://192.168.0.229:3000." & System.Environment.NewLine & System.Environment.NewLine &
                     "Asegurate de que el servidor esté iniciado en tu computadora ejecutando:" & System.Environment.NewLine &
                     "  npm run dev" & System.Environment.NewLine & System.Environment.NewLine &
                     "Detalle del error:" & System.Environment.NewLine &
@@ -299,14 +299,14 @@ Public Class InventorWebBridge
 
             ' 6. Conexión exitosa: Ofrecer abrir la WebApp en localhost:3000
             Dim targetBrowserUrl As String = If(Not String.IsNullOrWhiteSpace(sessionId),
-                String.Format("http://localhost:3000/?session={0}&view=bom", sessionId),
-                "http://localhost:3000/?view=bom")
+                String.Format("http://localhost:3000?session={0}&view=bom", sessionId),
+                "http://localhost:3000?view=bom")
 
             Dim msgConfirmacion As String = String.Format(
                 "¡Lista de Materiales transmitida exitosamente a la WebApp!" & System.Environment.NewLine & System.Environment.NewLine &
                 "• Ensamblaje: {0}" & System.Environment.NewLine &
                 "• Componentes extraídos: {1} piezas reales" & System.Environment.NewLine &
-                "• Servidor: http://localhost:3000" & System.Environment.NewLine & System.Environment.NewLine &
+                "• Servidor: http://192.168.0.229:3000" & System.Environment.NewLine & System.Environment.NewLine &
                 "¿Deseás abrir la WebApp en tu navegador ahora?",
                 partNumber, bomList.Count)
 
@@ -568,7 +568,7 @@ Public Class InventorWebBridge
     End Function
 
     ''' <summary>
-    ''' Obtiene el valor booleano de la propiedad personalizada COM (True/False, SI/NO, 1/0, X, VERDADERO)
+    ''' Obtiene el valor booleano de la propiedad personalizada COM (True/False, SI/NO, 1/0, X, VERDADERO, ✓)
     ''' </summary>
     Public Shared Function GetIsCom(doc As Document, pNum As String, pMat As String) As Boolean
         If doc Is Nothing Then Return False
@@ -580,7 +580,9 @@ Public Class InventorWebBridge
     End Function
 
     ''' <summary>
-    ''' Inspecciona colecciones de iProperties buscando 'COM' en Custom Properties
+    ''' Inspecciona colecciones de iProperties buscando 'COM' en Custom Properties (Inventor User Defined Properties).
+    ''' ÚNICAMENTE retorna True si la iProperty personalizada 'COM' existe y tiene el valor '✓' (o variantes afirmativas SI/TRUE/1).
+    ''' NO aplica heurísticas automáticas por nombre o material (ej. Normalizado) para evitar falsos positivos en piezas fabricadas.
     ''' </summary>
     Public Shared Function GetIsComFromPropertySets(pSets As PropertySets, pNum As String, pMat As String) As Boolean
         If pSets Is Nothing Then Return False
@@ -591,10 +593,18 @@ Public Class InventorWebBridge
                     Dim pName As String = prop.Name
                     If String.Equals(pName, "COM", StringComparison.OrdinalIgnoreCase) Then
                         If prop.Value IsNot Nothing Then
-                            Dim v As String = prop.Value.ToString().Trim().ToUpper()
-                            If v = "✓" Then
+                            Dim v As String = prop.Value.ToString().Trim()
+                            ' Comprobación estricta del valor marcado:
+                            If v = "✓" OrElse
+                               String.Equals(v, "SI", StringComparison.OrdinalIgnoreCase) OrElse
+                               String.Equals(v, "S", StringComparison.OrdinalIgnoreCase) OrElse
+                               String.Equals(v, "TRUE", StringComparison.OrdinalIgnoreCase) OrElse
+                               String.Equals(v, "1", StringComparison.OrdinalIgnoreCase) OrElse
+                               String.Equals(v, "X", StringComparison.OrdinalIgnoreCase) OrElse
+                               String.Equals(v, "VERDADERO", StringComparison.OrdinalIgnoreCase) Then
                                 Return True
-                            ElseIf v = " " OrElse v = "" Then
+                            Else
+                                ' Si está en blanco (""), espacio (" "), "NO" o cualquier otro valor, NO es comercial
                                 Return False
                             End If
                         End If
@@ -604,16 +614,7 @@ Public Class InventorWebBridge
         Catch
         End Try
 
-        If Not String.IsNullOrWhiteSpace(pNum) Then
-            Dim pUpper = pNum.ToUpper()
-            If pUpper.StartsWith("COMERCIAL") OrElse pUpper.StartsWith("ISO ") OrElse pUpper.StartsWith("ROD-") Then
-                Return True
-            End If
-        End If
-        If Not String.IsNullOrWhiteSpace(pMat) AndAlso pMat.ToUpper().Contains("NORMALIZADO") Then
-            Return True
-        End If
-
+        ' Si no tiene la iProperty COM explícita, por defecto es Fabricada (False)
         Return False
     End Function
 

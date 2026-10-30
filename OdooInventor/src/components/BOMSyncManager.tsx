@@ -69,7 +69,7 @@ export const BOMSyncManager: React.FC<BOMSyncManagerProps> = ({
   // URL activa de la WebApp (toma dinámicamente el origen de tu navegador)
   const publicWebAppUrl = typeof window !== 'undefined'
     ? window.location.origin
-    : 'http://localhost:3000';
+    : 'http://192.168.0.229:3000';
 
   const fileInputRef = React.useRef<HTMLInputElement>(null);
 
@@ -107,18 +107,22 @@ export const BOMSyncManager: React.FC<BOMSyncManagerProps> = ({
                 material: parsed.material || 'Acero Inoxidable / Normalizados',
                 mass: Number(parsed.mass) || 0,
                 volume: Number(parsed.volume) || 0,
-                dimensions: parsed.dimensions || 'N/A',
-                odooProductId: '1048',
+                dimensions: parsed.dimensions || '',
+                odooProductId: parsed.odooProductId || '',
                 syncStatus: 'pending',
                 lastSync: 'Cargado desde ' + file.name,
                 iProperties: parsed.iProperties || {
-                  Title: parsed.description || 'Ensamblaje Inventor',
-                  Subject: 'OT-26148',
-                  Company: 'Deblasi Soluciones Industriales',
-                  Manager: 'Ingeniería Mecánica',
-                  CostCenter: 'CC-ING',
+                  Title: parsed.description || parsed.name || '',
+                  Subject: parsed.project || '',
+                  Company: parsed.company || parsed.vendor || '',
+                  Manager: parsed.designer || parsed.author || '',
+                  CostCenter: '',
                   StandardCost: 0,
-                  StockLocation: 'WH/Stock'
+                  StockLocation: '',
+                  PartNumber: parsed.partNumber || '',
+                  StockNumber: parsed.stockNumber || '',
+                  Project: parsed.project || '',
+                  Designer: parsed.designer || parsed.author || ''
                 },
                 bom: items
               };
@@ -241,18 +245,22 @@ export const BOMSyncManager: React.FC<BOMSyncManagerProps> = ({
               material: parsed.material || 'Acero Inoxidable / Comercial',
               mass: Number(parsed.mass) || 0,
               volume: Number(parsed.volume) || 0,
-              dimensions: parsed.dimensions || 'N/A',
-              odooProductId: '1048',
+              dimensions: parsed.dimensions || '',
+              odooProductId: parsed.odooProductId || '',
               syncStatus: 'pending',
               lastSync: 'Recibido desde Portapapeles de Windows',
               iProperties: parsed.iProperties || {
-                Title: parsed.description || 'Ensamblaje Inventor',
-                Subject: 'OT-26148',
-                Company: 'Deblasi Soluciones Industriales',
-                Manager: 'Ingeniería Mecánica',
-                CostCenter: 'CC-ING',
+                Title: parsed.description || parsed.name || '',
+                Subject: parsed.project || '',
+                Company: parsed.company || parsed.vendor || '',
+                Manager: parsed.designer || parsed.author || '',
+                CostCenter: '',
                 StandardCost: 0,
-                StockLocation: 'WH/Stock'
+                StockLocation: '',
+                PartNumber: parsed.partNumber || '',
+                StockNumber: parsed.stockNumber || '',
+                Project: parsed.project || '',
+                Designer: parsed.designer || parsed.author || ''
               },
               bom: items
             };
@@ -552,219 +560,7 @@ export const BOMSyncManager: React.FC<BOMSyncManagerProps> = ({
   };
 
   // Regla iLogic completa que extrae TODOS los componentes (hasta 22 o más) y envía a la WebApp
-  const ilogicCode = `' =====================================================================
-' REGLA iLogic: Extraer LDM completa de Autodesk Inventor y sincronizar con WebApp
-' Pega este código en: Pestaña "Administrar" -> iLogic -> Añadir Regla -> Guardar y Ejecutar
-' =====================================================================
-Sub Main()
-    Dim doc As AssemblyDocument = TryCast(ThisDoc.Document, AssemblyDocument)
-    If doc Is Nothing Then
-        MessageBox.Show("Abrí un ensamblaje (.iam) en Autodesk Inventor.", "OdooInventor")
-        Return
-    End If
-
-    Dim webAppUrl As String = "http://localhost:3000"
-    Dim endpointUrl As String = webAppUrl & "/api/inventor/import-session"
-
-    Dim asmDef As AssemblyComponentDefinition = doc.ComponentDefinition
-    Dim bomItems As New System.Collections.Generic.List(Of Object)()
-    Dim counts As New System.Collections.Generic.Dictionary(Of String, Double)()
-    Dim descriptions As New System.Collections.Generic.Dictionary(Of String, String)()
-    Dim materials As New System.Collections.Generic.Dictionary(Of String, String)()
-    Dim uoms As New System.Collections.Generic.Dictionary(Of String, String)()
-
-    ' Función auxiliar para extraer MATERIAL_PLANO de Custom Properties
-    Dim GetMatPlano = Function(d As Document) As String
-        If d Is Nothing Then Return "Acero / Normalizado"
-        Try
-            Dim cProps As PropertySet = d.PropertySets.Item("Inventor User Defined Properties")
-            For Each p As [Property] In cProps
-                If String.Equals(p.Name, "MATERIAL_PLANO", StringComparison.OrdinalIgnoreCase) Then
-                    If p.Value IsNot Nothing AndAlso Not String.IsNullOrWhiteSpace(p.Value.ToString()) Then
-                        Return p.Value.ToString().Trim()
-                    End If
-                End If
-            Next
-        Catch
-        End Try
-        Try
-            Dim dp As PropertySet = d.PropertySets.Item("Design Tracking Properties")
-            Return dp.Item("Material").Value.ToString().Trim()
-        Catch
-        End Try
-        Return "Acero / Normalizado"
-    End Function
-
-    ' ESTRATEGIA 1: BOM Nativa de Inventor (PartsOnly / Structured)
-    Try
-        Dim oBOM As BOM = asmDef.BOM
-        oBOM.PartsOnlyViewEnabled = True
-        oBOM.StructuredViewEnabled = True
-        oBOM.StructuredViewFirstLevelOnly = False
-
-        Dim targetView As BOMView = Nothing
-        For Each v As BOMView In oBOM.BOMViews
-            If v.ViewType = BOMViewTypeEnum.kPartsOnlyBOMViewType OrElse v.ViewType = BOMViewTypeEnum.kStructuredBOMViewType Then
-                targetView = v
-                Exit For
-            End If
-        Next
-
-        If targetView IsNot Nothing Then
-            For Each row As BOMRow In targetView.BOMRows
-                Try
-                    Dim compDef As ComponentDefinition = row.ComponentDefinitions.Item(1)
-                    Dim rDoc As Document = compDef.Document
-                    Dim pNum As String = rDoc.DisplayName
-                    Dim pDesc As String = rDoc.DisplayName
-                    Dim pMat As String = "Normalizado"
-
-                    Try
-                        Dim dp As PropertySet = rDoc.PropertySets.Item("Design Tracking Properties")
-                        pNum = dp.Item("Part Number").Value.ToString()
-                        pDesc = dp.Item("Description").Value.ToString()
-                    Catch
-                    End Try
-
-                    ' Priorizar MATERIAL_PLANO de Custom Properties
-                    pMat = GetMatPlano(rDoc)
-
-                    If String.IsNullOrWhiteSpace(pNum) Then pNum = rDoc.DisplayName
-                    If String.IsNullOrWhiteSpace(pDesc) Then pDesc = pNum
-
-                    pNum = pNum.Trim()
-                    If counts.ContainsKey(pNum) Then
-                        counts(pNum) += row.ItemQuantity
-                    Else
-                        counts(pNum) = row.ItemQuantity
-                        descriptions(pNum) = pDesc
-                        materials(pNum) = pMat
-                        uoms(pNum) = "Unidades"
-                    End If
-                Catch
-                End Try
-            Next
-        End If
-    Catch
-    End Try
-
-    ' ESTRATEGIA 2: Fallback AllLeafOccurrences si la BOM nativa estuvo vacía
-    If counts.Count = 0 Then
-        For Each occ As ComponentOccurrence In asmDef.Occurrences.AllLeafOccurrences
-            Try
-                If occ.Suppressed Then Continue For
-                If occ.BOMStructure = BOMStructureEnum.kReferenceBOMStructure Then Continue For
-
-                Dim pNum As String = ""
-                Dim pDesc As String = ""
-                Dim pMat As String = "Normalizado"
-
-                Try
-                    Dim defDoc As Document = occ.Definition.Document
-                    If defDoc IsNot Nothing Then
-                        pNum = defDoc.DisplayName
-                        pDesc = defDoc.DisplayName
-                        Dim dp As PropertySet = defDoc.PropertySets.Item("Design Tracking Properties")
-                        Try
-                            pNum = dp.Item("Part Number").Value.ToString()
-                        Catch
-                        End Try
-                        Try
-                            pDesc = dp.Item("Description").Value.ToString()
-                        Catch
-                        End Try
-
-                        ' Priorizar MATERIAL_PLANO de Custom Properties
-                        pMat = GetMatPlano(defDoc)
-                    End If
-                Catch
-                End Try
-
-                If String.IsNullOrWhiteSpace(pNum) Then
-                    pNum = occ.Name
-                    If pNum.Contains(":") Then pNum = pNum.Substring(0, pNum.LastIndexOf(":"c))
-                End If
-                If String.IsNullOrWhiteSpace(pDesc) Then pDesc = pNum
-
-                pNum = pNum.Trim()
-                If counts.ContainsKey(pNum) Then
-                    counts(pNum) += 1
-                Else
-                    counts(pNum) = 1
-                    descriptions(pNum) = pDesc
-                    materials(pNum) = pMat
-                    uoms(pNum) = "Unidades"
-                End If
-            Catch
-            End Try
-        Next
-    End If
-
-    ' Armar items
-    Dim idx As Integer = 1
-    For Each kvp In counts
-        bomItems.Add(New With {
-            .id = idx.ToString(),
-            .item = idx.ToString(),
-            .partNumber = kvp.Key,
-            .description = descriptions(kvp.Key),
-            .qty = kvp.Value,
-            .uom = uoms(kvp.Key),
-            .material = materials(kvp.Key),
-            .odooId = "PROD-" & (100 + idx).ToString(),
-            .status = "pending"
-        })
-        idx += 1
-    Next
-
-    Dim payload = New With {
-        .assemblyName = doc.DisplayName,
-        .partNumber = doc.DisplayName,
-        .bom = bomItems
-    }
-
-    ' Serializar a JSON
-    Dim jsonStr As String = System.Text.Json.JsonSerializer.Serialize(payload)
-
-    ' 1. Copiar al Portapapeles (Garantía 100% infalible)
-    Try
-        System.Windows.Forms.Clipboard.SetText(jsonStr)
-    Catch
-    End Try
-
-    ' 2. Guardar en C:\OdooInventor\bom_export.json
-    Try
-        If Not System.IO.Directory.Exists("C:\OdooInventor") Then
-            System.IO.Directory.CreateDirectory("C:\OdooInventor")
-        End If
-        System.IO.File.WriteAllText("C:\OdooInventor\bom_export.json", jsonStr)
-    Catch
-    End Try
-
-    ' 3. Enviar por HTTP a la WebApp y abrir navegador
-    Try
-        Using client As New System.Net.WebClient()
-            client.Headers.Add("Content-Type", "application/json; charset=utf-8")
-            Dim resp As String = client.UploadString(endpointUrl, "POST", jsonStr)
-            
-            Dim pos As Integer = resp.IndexOf("""sessionId"":""")
-            If pos > 0 Then
-                Dim sId As String = resp.Substring(pos + 13, 20).Split(""""c)(0)
-                Process.Start(webAppUrl & "/?session=" & sId & "&view=bom")
-                Return
-            End If
-        End Using
-        Process.Start(webAppUrl & "/?view=bom")
-    Catch ex As Exception
-        ' Si la red corporativa bloquea el puerto, abrimos la WebApp pública igualmente
-        Process.Start(webAppUrl & "/?view=bom")
-    End Try
-
-    MessageBox.Show("¡" & bomItems.Count & " componentes extraídos exitosamente!" & vbCrLf & vbCrLf & _
-                    "1. Se abrió la WebApp en el navegador." & vbCrLf & _
-                    "2. En la WebApp, tocá 'Pegar LDM del Portapapeles' si no se cargó automáticamente.", _
-                    "OdooInventor iLogic", MessageBoxButtons.OK, MessageBoxIcon.Information)
-End Sub`;
+ 
 
   const copyToClipboard = (text: string, type: 'ilogic' | 'url') => {
     navigator.clipboard.writeText(text);
@@ -778,7 +574,7 @@ End Sub`;
   };
 
   const downloadIni = (targetUrl?: string) => {
-    const finalUrl = targetUrl || 'http://localhost:3000';
+    const finalUrl = targetUrl || 'http://192.168.0.229:3000';
     const content = `; Configuración del Puente Inventor -> OdooInventor WebApp\n; Colocar en la carpeta del Add-In o en C:\\OdooInventor\\config.ini\nURL=${finalUrl}\n`;
     const blob = new Blob([content], { type: 'text/plain' });
     const url = URL.createObjectURL(blob);
@@ -965,7 +761,7 @@ End Sub`;
             </div>
 
             <p className="text-[11px] text-slate-400 mt-2">
-              ⚠️ <strong>Importante sobre errores 404:</strong> Si en Inventor antes se abría una dirección terminada en <code className="text-rose-400">ais-pre-...</code> o con <code className="text-rose-400">/?view=bom</code>, arrojaba "Page not found" porque la URL real de ejecución es la que ves arriba (o <code className="text-blue-300">http://localhost:3000</code> si ejecutás localmente).
+              ⚠️ <strong>Importante sobre errores 404:</strong> Si en Inventor antes se abría una dirección terminada en <code className="text-rose-400">ais-pre-...</code> o con <code className="text-rose-400">/?view=bom</code>, arrojaba "Page not found" porque la URL real de ejecución es la que ves arriba (o <code className="text-blue-300">http://192.168.0.229:3000</code> si ejecutás localmente).
             </p>
           </div>
         </div>
@@ -1531,7 +1327,7 @@ End Sub`;
                     </p>
                     <div className="pt-1 flex items-center space-x-2">
                       <button
-                        onClick={() => downloadIni('http://localhost:3000')}
+                        onClick={() => downloadIni('http://192.168.0.229:3000')}
                         className="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white rounded font-bold text-xs flex items-center space-x-1.5 transition shadow"
                       >
                         <Download className="w-3.5 h-3.5" />
@@ -1550,9 +1346,9 @@ End Sub`;
                       En tu PC, el archivo <code>C:\OdooInventor\config.ini</code> o la compilación anterior del Add-In guardó la URL de prueba de la nube. Para volver a Localhost:
                     </p>
                     <ol className="list-decimal pl-4 space-y-1 text-slate-300 font-sans text-[11px]">
-                      <li>Abrí en tu PC el archivo <code>C:\OdooInventor\config.ini</code> y asegurate que diga <code>URL=http://localhost:3000</code>.</li>
+                      <li>Abrí en tu PC el archivo <code>C:\OdooInventor\config.ini</code> y asegurate que diga <code>URL=http://192.168.0.229:3000</code>.</li>
                       <li>Iniciá la app en tu terminal local con: <code>npm run dev</code>.</li>
-                      <li>¡Listo! Al tocar "Sincronizar BOM" en Inventor se abrirá directo en <code>http://localhost:3000</code>.</li>
+                      <li>¡Listo! Al tocar "Sincronizar BOM" en Inventor se abrirá directo en <code>http://192.168.0.229:3000</code>.</li>
                     </ol>
                   </div>
                 </div>

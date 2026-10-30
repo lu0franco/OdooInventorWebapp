@@ -19,4 +19,4 @@ npm install
 npm run dev
 ```
 
-El servidor web y proxy JSON-RPC se iniciará en el puerto 3000 (`http://localhost:3000`).
+El servidor web y proxy JSON-RPC se iniciará en el puerto 3000 (`http://192.168.0.229:3000`).

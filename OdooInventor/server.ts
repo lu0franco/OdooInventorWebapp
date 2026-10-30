@@ -27,7 +27,7 @@ app.get('/download/InventorWebBridge.vb', (_req: Request, res: Response) => {
 app.get('/download/config.ini', (_req: Request, res: Response) => {
   res.setHeader('Content-Type', 'text/plain');
   res.setHeader('Content-Disposition', 'attachment; filename="config.ini"');
-  res.send('URL=http://localhost:3000\r\n');
+  res.send('URL=http://192.168.0.229:3000\r\n');
 });
 
 // ==========================================
@@ -374,7 +374,18 @@ app.get('/api/odoo/create-purchase-requisition', (_req: Request, res: Response) 
 
 // Create Purchase Requisition (purchase.requisition & purchase.requisition.line) from BOM/LDM
 app.post('/api/odoo/create-purchase-requisition', async (req: Request, res: Response) => {
-  const { url, db, login, apiKey, items = [], origin = 'Autodesk Inventor LDM', notes = '', scheduleDate = '' } = req.body;
+  const {
+    url,
+    db,
+    login,
+    apiKey,
+    items = [],
+    origin = '',
+    description = '', // 🟡 Nº de almacenamiento (propsState.StockNumber)
+    designer = '',    // 🔵 Diseñador / Autorizador (propsState.Designer)
+    notes = '',
+    scheduleDate = ''
+  } = req.body;
 
   if (!url || !db || !login || !apiKey) {
     // Simulation / UI test mode
@@ -382,12 +393,14 @@ app.post('/api/odoo/create-purchase-requisition', async (req: Request, res: Resp
     const newRequisition = {
       id: Date.now(),
       name: fakeReqNumber,
-      origin: origin || 'Autodesk Inventor LDM',
+      origin: origin || (req.body.name || ''),
+      description: description || '',
+      designer: designer || '',
       state: 'draft' as const,
       ordering_date: new Date().toISOString().substring(0, 10),
       schedule_date: scheduleDate || new Date(Date.now() + 14 * 86400000).toISOString().substring(0, 10),
       timestamp: new Date().toISOString().replace('T', ' ').substring(0, 19),
-      notes: notes || 'Generado desde Autodesk Inventor 2027 — Componentes comerciales para fabricación.',
+      notes: description || notes || '',
       simulated: true,
       lines: items.map((it: any, idx: number) => ({
         id: idx + 1,
@@ -576,33 +589,93 @@ app.post('/api/odoo/create-purchase-requisition', async (req: Request, res: Resp
       }
     }
 
+    // Resolve autorizador / diseñador in res.users
+    let approverId: number | null = null;
+    try {
+      const allUsers = await executeKw('res.users', 'search_read', [
+        [['active', '=', true]]
+      ], { fields: ['id', 'name', 'login'], limit: 80 });
+
+      if (allUsers && allUsers.length > 0) {
+        const dTerm = String(designer || '').trim().toLowerCase();
+        
+        if (dTerm) {
+          // 1. Exact match with name or login
+          let matched = allUsers.find((u: any) => 
+            String(u.name || '').toLowerCase() === dTerm ||
+            String(u.login || '').toLowerCase() === dTerm
+          );
+
+          // 2. Initials match (e.g. designer "FL" -> "Franco Lucero")
+          if (!matched && dTerm.length >= 2 && dTerm.length <= 4) {
+            matched = allUsers.find((u: any) => {
+              const parts = String(u.name || '').trim().split(/\s+/).filter(Boolean);
+              const initials = parts.map((p: string) => p[0]).join('').toLowerCase();
+              return initials === dTerm || initials.startsWith(dTerm);
+            });
+          }
+
+          // 3. Contains match with designer name or login
+          if (!matched && dTerm.length >= 2) {
+            matched = allUsers.find((u: any) => 
+              String(u.name || '').toLowerCase().includes(dTerm) ||
+              String(u.login || '').toLowerCase().includes(dTerm)
+            );
+          }
+
+          if (matched) {
+            approverId = matched.id;
+            console.log(`[Odoo] Resolved autorizador '${designer}' to res.users ID ${approverId} (${matched.name} <${matched.login}>)`);
+          } else {
+            approverId = uid;
+            console.log(`[Odoo] Defaulting autorizador to current authenticated UID ${uid}`);
+          }
+        } else {
+          approverId = uid;
+        }
+      }
+    } catch (uErr: any) {
+      console.warn('[Odoo] User search warning:', uErr.message);
+      approverId = uid;
+    }
+
+    // Header values mapped according to user specification:
+    // 🔴 Red Box: Referencia de Solicitud (Combina Proyecto OT con Nº de pieza obtenido del Add-In)
+    const cleanOrigin = String(origin || req.body.name || '').trim();
+    // 🟡 Yellow Box: Descripción en Odoo (Mapeado directamente del Nº de almacenamiento obtenido del Add-In)
+    const cleanDescription = String(description || '').trim();
+
     // Build header payload dynamically based strictly on available fields
     const reqPayload: Record<string, any> = {};
 
     if (targetModel === 'purchase.request') {
-      // purchase.request fields
       if ('requested_by' in reqFields) {
         reqPayload.requested_by = uid;
       }
-      if ('origin' in reqFields) {
-        reqPayload.origin = origin || 'Autodesk Inventor LDM';
+      if (approverId) {
+        if ('assigned_to' in reqFields) reqPayload.assigned_to = approverId;
+        else if ('approver_id' in reqFields) reqPayload.approver_id = approverId;
+        else if ('validator_id' in reqFields) reqPayload.validator_id = approverId;
       }
-      if ('description' in reqFields) {
-        reqPayload.description = notes || `Solicitud de compra de componentes comerciales — ${origin || 'Autodesk Inventor LDM'}`;
-      }
+      // 🔴 Red Box: Referencia de Solicitud (En Odoo purchase.request es el campo 'name')
+      if ('name' in reqFields) reqPayload.name = cleanOrigin;
+      if ('code' in reqFields) reqPayload.code = cleanOrigin;
+      if ('reference' in reqFields) reqPayload.reference = cleanOrigin;
+
+      // 🟡 Yellow Box: description
+      if ('description' in reqFields) reqPayload.description = cleanDescription;
+      if ('notes' in reqFields) reqPayload.notes = cleanDescription;
+
       if ('date_start' in reqFields) {
         reqPayload.date_start = new Date().toISOString().substring(0, 10);
       }
     } else {
       // purchase.requisition fields
-      if ('origin' in reqFields) {
-        reqPayload.origin = origin || 'Autodesk Inventor LDM';
-      }
-      if ('description' in reqFields) {
-        reqPayload.description = notes || `Solicitud generada desde Autodesk Inventor 2027 — ${origin || 'LDM'}`;
-      } else if ('notes' in reqFields) {
-        reqPayload.notes = notes || `Solicitud generada desde Autodesk Inventor 2027 — ${origin || 'LDM'}`;
-      }
+      if ('name' in reqFields) reqPayload.name = cleanOrigin;
+      if ('origin' in reqFields) reqPayload.origin = cleanOrigin;
+      if ('description' in reqFields) reqPayload.description = cleanDescription;
+      else if ('notes' in reqFields) reqPayload.notes = cleanDescription;
+
       if ('user_id' in reqFields) {
         reqPayload.user_id = uid;
       }
@@ -625,25 +698,35 @@ app.post('/api/odoo/create-purchase-requisition', async (req: Request, res: Resp
       reqId = await executeKw(targetModel, 'create', [reqPayload]);
     } catch (createReqErr: any) {
       console.warn(`[Odoo] Primary ${targetModel} create failed:`, createReqErr.message);
-      // Minimal retry payload with only essential fields
-      const minimalPayload: Record<string, any> = {};
-      if (targetModel === 'purchase.request') {
-        if ('requested_by' in reqFields) minimalPayload.requested_by = uid;
-        if ('origin' in reqFields) minimalPayload.origin = origin || 'Autodesk Inventor LDM';
-        if ('description' in reqFields) minimalPayload.description = notes || `Solicitud de compra — ${origin || 'Autodesk Inventor LDM'}`;
-      } else {
-        if ('origin' in reqFields) minimalPayload.origin = origin || 'Autodesk Inventor LDM';
-        if (typeId && 'type_id' in reqFields) minimalPayload.type_id = typeId;
-      }
+      // Retry without assigned_to in case security groups prevent setting assigned_to directly on create
+      const retryPayload: Record<string, any> = { ...reqPayload };
+      delete retryPayload.assigned_to;
+      delete retryPayload.approver_id;
+      delete retryPayload.validator_id;
+
       try {
-        reqId = await executeKw(targetModel, 'create', [minimalPayload]);
+        reqId = await executeKw(targetModel, 'create', [retryPayload]);
       } catch (retryErr: any) {
-        console.error(`[Odoo] ${targetModel} minimal create failed:`, retryErr.message);
-        return res.status(200).json({
-          success: false,
-          error: `Error al crear '${targetModel}' en Odoo: ${createReqErr.message || retryErr.message}`,
-          canSimulate: true
-        });
+        console.error(`[Odoo] ${targetModel} retry create failed:`, retryErr.message);
+        const minimalPayload: Record<string, any> = {};
+        if (targetModel === 'purchase.request') {
+          if ('name' in reqFields) minimalPayload.name = cleanOrigin;
+          if ('requested_by' in reqFields) minimalPayload.requested_by = uid;
+          if ('description' in reqFields) minimalPayload.description = cleanDescription;
+        } else {
+          if ('name' in reqFields) minimalPayload.name = cleanOrigin;
+          if ('origin' in reqFields) minimalPayload.origin = cleanOrigin;
+          if (typeId && 'type_id' in reqFields) minimalPayload.type_id = typeId;
+        }
+        try {
+          reqId = await executeKw(targetModel, 'create', [minimalPayload]);
+        } catch (minErr: any) {
+          return res.status(200).json({
+            success: false,
+            error: `Error al crear '${targetModel}' en Odoo: ${createReqErr.message || minErr.message}`,
+            canSimulate: true
+          });
+        }
       }
     }
 
@@ -655,6 +738,21 @@ app.post('/api/odoo/create-purchase-requisition', async (req: Request, res: Resp
       });
     }
 
+    // Follow up with an explicit write() to guarantee that Referencia de Solicitud (name), description, and assigned_to are set
+    try {
+      const writeData: Record<string, any> = {};
+      if ('name' in reqFields) writeData.name = cleanOrigin;
+      if ('reference' in reqFields) writeData.reference = cleanOrigin;
+      if ('description' in reqFields) writeData.description = cleanDescription;
+      if (approverId && 'assigned_to' in reqFields) writeData.assigned_to = approverId;
+      if (Object.keys(writeData).length > 0) {
+        await executeKw(targetModel, 'write', [[reqId], writeData]);
+        console.log(`[Odoo] Explicit header update verified on ${targetModel} ID ${reqId}:`, writeData);
+      }
+    } catch (writeErr: any) {
+      console.warn(`[Odoo] Post-create write warning on ${targetModel}:`, writeErr.message);
+    }
+
     // Introspect line fields
     let lineFields: Record<string, any> = {};
     try {
@@ -663,9 +761,10 @@ app.post('/api/odoo/create-purchase-requisition', async (req: Request, res: Resp
       console.warn(`[Odoo] fields_get on ${lineModel} warning:`, lineFieldErr.message);
     }
 
-    // 3. For each LDM item, link to mapped product and create line in lineModel
-    let createdLines = 0;
-    const lineErrors: string[] = [];
+    // Enforce user requirement:
+    // "lo que no puede pasar es que un elemento COM no se le asigne un producto existente de la base de datos y se genere una purchase.request con menos elementos de los que se precisan o se le asigne aleatoriamente un producto existente para que pueda armarse la purchase.request"
+    // Validate all items first so we NEVER create an incomplete request with missing lines!
+    const validatedLines: Array<{ item: any; productId: number; uomId?: number }> = [];
 
     for (const item of items) {
       if (!item.partNumber && !item.description) continue;
@@ -673,7 +772,7 @@ app.post('/api/odoo/create-purchase-requisition', async (req: Request, res: Resp
       let productId: number | null = null;
       const rawCandidateId = Number(item.odooProductId || item.productId);
 
-      // 1. Verify if candidate ID actually exists in Odoo product.product
+      // Verify product candidate exists in Odoo product.product
       if (rawCandidateId && !isNaN(rawCandidateId) && rawCandidateId > 0) {
         try {
           const verified = await executeKw('product.product', 'search_read', [
@@ -681,95 +780,29 @@ app.post('/api/odoo/create-purchase-requisition', async (req: Request, res: Resp
           ], { fields: ['id', 'name', 'default_code', 'uom_id'], limit: 1 });
           if (verified && verified.length > 0) {
             productId = verified[0].id;
-          } else {
-            console.warn(`[Odoo] Candidate productId ${rawCandidateId} is not in product.product. Re-resolving...`);
           }
         } catch {}
       }
 
-      // 2. Search by default_code (extracting bracketed code like "[247964]" -> "247964" and parens "(PIAZ 1258)" -> "PIAZ 1258")
-      if (!productId) {
-        const rawCode = String(item.partNumber || '').trim();
-        const codeInBrackets = rawCode.match(/\[(.*?)\]/)?.[1]?.trim() || '';
-        const codeInParens = rawCode.match(/\((PIAZ\s*\d+|[A-Za-z0-9_\-\.]{3,})\)/i)?.[1]?.trim() || '';
-        const piazMatch = rawCode.match(/\b(PIAZ\s*\d+)\b/i)?.[1]?.trim() || '';
-        const explicitProductCode = String(item.productCode || '').trim();
-
-        const searchCodes = [
-          explicitProductCode,
-          codeInBrackets,
-          codeInParens,
-          piazMatch,
-          rawCode
-        ].filter(c => c && c.length >= 2);
-
-        const uniqueCodes = Array.from(new Set(searchCodes));
-
-        for (const c of uniqueCodes) {
-          try {
-            const foundByCode = await executeKw('product.product', 'search_read', [
-              ['|', ['default_code', '=', c], ['default_code', 'ilike', c]]
-            ], { fields: ['id', 'name', 'default_code', 'uom_id'], limit: 1 });
-            if (foundByCode && foundByCode.length > 0) {
-              productId = foundByCode[0].id;
-              console.log(`[Odoo] Found product by default_code '${c}': ID ${productId} - ${foundByCode[0].name}`);
-              break;
-            }
-          } catch {}
-        }
-      }
-
-      // 3. Search by name / designation using PIEZA CAD / REFERENCIA (item.partNumber or item.productName)
-      if (!productId) {
-        const rawName = String(item.productName || item.partNumber || '').trim();
-        const cleanName = rawName.replace(/\[.*?\]\s*/g, '').replace(/\(.*?\)\s*/g, '').trim();
-        const searchTerms = [cleanName, rawName].filter(n => n.length >= 3);
-
-        // Also extract key model strings like "UMI 40", "UCFL 206", "PASO 25", "PIAZ 1258"
-        const modelMatch = rawName.match(/\b([A-Z]{2,}\s*\d{2,}[A-Z\d\/-]*)\b/i);
-        if (modelMatch && modelMatch[1]) {
-          searchTerms.push(modelMatch[1].trim());
-        }
-
-        for (const term of searchTerms) {
-          try {
-            const foundByName = await executeKw('product.product', 'search_read', [
-              ['|', ['name', 'ilike', term], ['default_code', 'ilike', term]]
-            ], { fields: ['id', 'name', 'default_code', 'uom_id'], limit: 1 });
-            if (foundByName && foundByName.length > 0) {
-              productId = foundByName[0].id;
-              console.log(`[Odoo] Found product by name/term '${term}': ID ${productId} - ${foundByName[0].name}`);
-              break;
-            }
-          } catch {}
-        }
-      }
-
-      // 4. Create product in Odoo if not found
-      if (!productId) {
-        const rawCode = String(item.partNumber || '').trim();
-        const codeInBrackets = rawCode.match(/\[(.*?)\]/)?.[1]?.trim() || '';
-        const codeInParens = rawCode.match(/\((PIAZ\s*\d+|[A-Za-z0-9_\-\.]{3,})\)/i)?.[1]?.trim() || '';
-        const defaultCodeToUse = item.productCode || codeInBrackets || codeInParens || rawCode;
-        const nameToUse = String(item.productName || item.partNumber || 'Componente Comercial CAD').trim();
-
+      // If not directly by ID, search by exact default_code (e.g. 247964, PIAZ 083, etc.)
+      if (!productId && item.productCode) {
         try {
-          productId = await executeKw('product.product', 'create', [{
-            default_code: defaultCodeToUse,
-            name: nameToUse,
-            type: 'consu',
-            purchase_ok: true
-          }]);
-          console.log(`[Odoo] Created new product.product ID ${productId} for '${nameToUse}' [${defaultCodeToUse}]`);
-        } catch (createProdErr: any) {
-          console.warn(`[Odoo] Could not create product for ${item.partNumber}:`, createProdErr.message);
-        }
+          const found = await executeKw('product.product', 'search_read', [
+            [['default_code', '=', String(item.productCode).trim()]]
+          ], { fields: ['id', 'name', 'default_code', 'uom_id'], limit: 1 });
+          if (found && found.length > 0) {
+            productId = found[0].id;
+          }
+        } catch {}
       }
 
-      // 5. If still not found, do NOT assign a random product! Report clearly in lineErrors
+      // If still not found, we CANNOT proceed or randomly assign a product!
       if (!productId) {
-        lineErrors.push(`[${item.partNumber}]: No se encontró producto en Odoo con ese código o nombre, y no se pudo crear automáticamente.`);
-        continue;
+        return res.status(200).json({
+          success: false,
+          error: `No se pudo enviar la solicitud: La pieza '${item.partNumber}' no tiene un producto existente de Odoo asignado. Por favor, buscala y seleccionala desde el desplegable antes de enviar para evitar generar una solicitud incompleta.`,
+          canSimulate: true
+        });
       }
 
       // Read product UoM
@@ -781,13 +814,14 @@ app.post('/api/odoo/create-purchase-requisition', async (req: Request, res: Resp
         }
       } catch {}
 
-      if (!uomId) {
-        try {
-          const uoms = await executeKw('uom.uom', 'search_read', [[]], { fields: ['id', 'name'], limit: 1 });
-          if (uoms && uoms.length > 0) uomId = uoms[0].id;
-        } catch {}
-      }
+      validatedLines.push({ item, productId, uomId });
+    }
 
+    // 3. For each validated LDM item, create line in lineModel
+    let createdLines = 0;
+    const lineErrors: string[] = [];
+
+    for (const { item, productId, uomId } of validatedLines) {
       const qtyVal = Math.max(1, Number(item.qty || 1));
       const linePayload: Record<string, any> = {
         product_id: productId
@@ -819,7 +853,7 @@ app.post('/api/odoo/create-purchase-requisition', async (req: Request, res: Resp
       if ('name' in lineFields || targetModel === 'purchase.request') {
         linePayload.name = desc;
       }
-      if ('description' in lineFields && !linePayload.description) {
+      if (targetModel !== 'purchase.request' && 'description' in lineFields && !linePayload.description) {
         linePayload.description = desc;
       }
       if ('product_description_variants' in lineFields) {
@@ -912,17 +946,70 @@ app.post('/api/odoo/products/search', async (req: Request, res: Response) => {
   const rawQ = String(query || '').trim();
   const cleanQ = rawQ.toLowerCase();
 
-  // Extract bracket code like [247964] -> "247964"
-  const bracketCode = (rawQ.match(/\[(.*?)\]/)?.[1] || '').trim().toLowerCase();
-  // Extract paren code like (PIAZ 1258) -> "PIAZ 1258"
-  const parenCode = (rawQ.match(/\((PIAZ\s*\d+|[A-Z0-9\-_]{3,})\)/i)?.[1] || '').trim().toLowerCase();
-  // Clean description string without bracket or parentheses
-  const cleanText = rawQ.replace(/\[.*?\]/g, '').replace(/\(.*?\)/g, '').trim().toLowerCase();
+  // Stop words to avoid polluting search terms
+  const stopWords = new Set(['a', 'e', 'o', 'u', 'y', 'd', 'de', 'la', 'el', 'en', 'para', 'con', 'sin', 'del', 'al', 'los', 'las', 'un', 'una', '-', '/', 'c/']);
+
+  // Extract specific pattern codes
+  const bracketCode = (rawQ.match(/\[(.*?)\]/)?.[1] || '').trim();
+  const parenCode = (rawQ.match(/\((PIAZ\s*\d+|[A-Z0-9\-_]{3,})\)/i)?.[1] || '').trim();
+  const piazCode = (rawQ.match(/\b(PIAZ\s*\d+)\b/i)?.[1] || '').trim();
+
+  // Extract individual words/tokens with length >= 2 OR numeric digits (like "4", "2")
+  const cleanTokens = rawQ
+    .replace(/[\[\](),\-_/]/g, ' ')
+    .replace(/[^a-zA-Z0-9áéíóúñÁÉÍÓÚÑ\s]/g, ' ')
+    .split(/\s+/)
+    .map(t => t.trim())
+    .filter(t => (t.length >= 2 || /\d/.test(t)) && !stopWords.has(t.toLowerCase()));
+
+  // Distinct search segments ("tramos"):
+  const tramos: string[] = [];
+  if (bracketCode && !tramos.includes(bracketCode)) tramos.push(bracketCode);
+  if (parenCode && !tramos.includes(parenCode)) tramos.push(parenCode);
+  if (piazCode && !tramos.includes(piazCode)) tramos.push(piazCode);
+  for (const tok of cleanTokens) {
+    if (!tramos.some(t => t.toLowerCase() === tok.toLowerCase())) {
+      tramos.push(tok);
+    }
+  }
 
   const useUrl = url || savedOdooAuth.url || 'https://deblasi.adhoc.ar';
   const useDb = db || savedOdooAuth.db || '';
   const useLogin = login || savedOdooAuth.login || '';
   const useApiKey = apiKey || savedOdooAuth.apiKey || '';
+
+  // Helper to check if a tramo matches a product accurately (with word boundaries for numbers like 4)
+  const checkTramoMatch = (pCode: string, pName: string, t: string): boolean => {
+    const tNorm = t.toLowerCase().trim();
+    if (!tNorm) return false;
+    if (pCode === tNorm) return true;
+
+    // For short tokens (<= 2 chars like "4", "2", "20")
+    if (tNorm.length <= 2) {
+      const escaped = tNorm.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      const rx = new RegExp(`(^|[^a-zA-Z0-9áéíóúñÁÉÍÓÚÑ])${escaped}([^a-zA-Z0-9áéíóúñÁÉÍÓÚÑ]|$)`, 'i');
+      if (rx.test(pName)) return true;
+      if (rx.test(pCode)) return true;
+      return false;
+    }
+
+    return pName.includes(tNorm) || pCode.includes(tNorm);
+  };
+
+  // Helper to score and rank products by matched tramos
+  const scoreProduct = (p: any): { prod: any; score: number; matchCount: number } => {
+    const pCode = String(p.default_code || '').toLowerCase();
+    const pName = String(p.name || '').toLowerCase();
+    let matchCount = 0;
+    for (const t of tramos) {
+      if (checkTramoMatch(pCode, pName, t)) matchCount++;
+    }
+    let score = matchCount * 25;
+    if (tramos.length > 0 && matchCount === tramos.length) score += 100; // All tramos match bonus!
+    if (cleanQ && `${pCode} ${pName}`.includes(cleanQ)) score += 50; // Contiguous exact match bonus
+    if (pCode && tramos.some(t => t.toLowerCase() === pCode)) score += 60; // Code match bonus
+    return { prod: p, score, matchCount };
+  };
 
   // 1. If credentials provided, attempt live search in Odoo
   if (useUrl && useDb && useLogin && useApiKey) {
@@ -946,14 +1033,31 @@ app.post('/api/odoo/products/search', async (req: Request, res: Response) => {
 
       if (uid) {
         let domain: any[] = [];
-        if (bracketCode || parenCode) {
-          const codeToFind = bracketCode || parenCode;
-          domain = ['|', '|', ['default_code', 'ilike', codeToFind], ['name', 'ilike', codeToFind], ['name', 'ilike', cleanText || cleanQ]];
-        } else if (cleanQ) {
-          domain = ['|', ['name', 'ilike', cleanQ], ['default_code', 'ilike', cleanQ]];
+        const pushTramoCondition = (t: string) => {
+          if (t.length <= 1) {
+            domain.push('|');
+            domain.push(['name', 'ilike', t]);
+            domain.push(['default_code', '=', t]);
+          } else {
+            domain.push('|');
+            domain.push(['name', 'ilike', t]);
+            domain.push(['default_code', 'ilike', t]);
+          }
+        };
+
+        if (tramos.length === 1) {
+          pushTramoCondition(tramos[0]);
+        } else if (tramos.length > 1) {
+          // Multi-term search by "tramos": join all tramos with AND in Polish prefix notation
+          for (let i = 0; i < tramos.length - 1; i++) {
+            domain.push('&');
+          }
+          for (const t of tramos) {
+            pushTramoCondition(t);
+          }
         }
 
-        const searchRes = await fetch(jsonRpcUrl, {
+        let searchRes = await fetch(jsonRpcUrl, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
@@ -970,8 +1074,51 @@ app.post('/api/odoo/products/search', async (req: Request, res: Response) => {
             id: Date.now()
           })
         });
-        const searchText = await searchRes.text();
-        const searchJson = JSON.parse(searchText);
+        let searchText = await searchRes.text();
+        let searchJson = JSON.parse(searchText);
+
+        // Fallback: If strict AND of all tramos returned 0, try an OR search so user sees closest partial matches
+        if ((!Array.isArray(searchJson?.result) || searchJson.result.length === 0) && tramos.length > 1) {
+          const fallbackDomain: any[] = [];
+          const pushFallbackCondition = (t: string) => {
+            if (t.length <= 1) {
+              fallbackDomain.push('|');
+              fallbackDomain.push(['name', 'ilike', t]);
+              fallbackDomain.push(['default_code', '=', t]);
+            } else {
+              fallbackDomain.push('|');
+              fallbackDomain.push(['name', 'ilike', t]);
+              fallbackDomain.push(['default_code', 'ilike', t]);
+            }
+          };
+
+          for (let i = 0; i < tramos.length - 1; i++) {
+            fallbackDomain.push('|');
+          }
+          for (const t of tramos) {
+            pushFallbackCondition(t);
+          }
+
+          searchRes = await fetch(jsonRpcUrl, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              jsonrpc: '2.0',
+              method: 'call',
+              params: {
+                service: 'object',
+                method: 'execute_kw',
+                args: [useDb.trim(), uid, useApiKey.trim(), 'product.product', 'search_read', [fallbackDomain], {
+                  fields: ['id', 'name', 'default_code', 'qty_available', 'uom_id', 'standard_price'],
+                  limit
+                }]
+              },
+              id: Date.now() + 1
+            })
+          });
+          searchText = await searchRes.text();
+          searchJson = JSON.parse(searchText);
+        }
 
         if (Array.isArray(searchJson?.result)) {
           const liveProducts = searchJson.result.map((p: any) => ({
@@ -983,8 +1130,17 @@ app.post('/api/odoo/products/search', async (req: Request, res: Response) => {
             standard_price: p.standard_price || 0
           }));
 
+          // Rank & Acotar: if there are products matching ALL tramos (e.g. 4/4), show only those
+          const scoredLive = liveProducts.map((p: any) => scoreProduct(p));
+          const fullMatchesLive = scoredLive.filter((item: any) => tramos.length > 0 && item.matchCount === tramos.length);
+          const candidateLive = fullMatchesLive.length > 0 ? fullMatchesLive : scoredLive.filter((item: any) => !cleanQ || item.matchCount > 0);
+
+          const rankedProducts = candidateLive
+            .sort((a: any, b: any) => b.score - a.score)
+            .map((item: any) => item.prod);
+
           // Merge live products into mockState.odooProducts cache
-          for (const lp of liveProducts) {
+          for (const lp of rankedProducts) {
             const idx = mockState.odooProducts.findIndex(cp => cp.id === lp.id);
             if (idx >= 0) {
               mockState.odooProducts[idx] = { ...mockState.odooProducts[idx], ...lp };
@@ -996,7 +1152,8 @@ app.post('/api/odoo/products/search', async (req: Request, res: Response) => {
           return res.json({
             success: true,
             source: 'odoo_live',
-            products: liveProducts
+            products: rankedProducts,
+            tramos
           });
         }
       }
@@ -1005,26 +1162,14 @@ app.post('/api/odoo/products/search', async (req: Request, res: Response) => {
     }
   }
 
-  // 2. Search local products database using exact code, bracket/paren code, or tokens
-  const tokens = cleanQ.split(/\s+/).filter(t => t.length > 2);
-  const matches = mockState.odooProducts.filter(p => {
-    if (!cleanQ) return true;
-    const pCode = String(p.default_code || '').toLowerCase();
-    const pName = String(p.name || '').toLowerCase();
+  // 2. Search local products database using exact tramos & ranking
+  const scoredLocal = mockState.odooProducts.map((p: any) => scoreProduct(p));
+  const fullMatchesLocal = scoredLocal.filter((item: any) => tramos.length > 0 && item.matchCount === tramos.length);
+  const candidateLocal = fullMatchesLocal.length > 0 ? fullMatchesLocal : scoredLocal.filter((item: any) => !cleanQ || item.matchCount > 0);
 
-    // Direct code matches
-    if (bracketCode && (pCode === bracketCode || pCode.includes(bracketCode))) return true;
-    if (parenCode && (pCode === parenCode || pCode.includes(parenCode))) return true;
-    if (pCode && (pCode === cleanQ || pCode.includes(cleanQ) || cleanQ.includes(pCode))) return true;
-
-    // Direct name match
-    if (pName.includes(cleanQ)) return true;
-
-    // Token match: if at least 1 token matches
-    if (tokens.length > 0 && tokens.some(t => pName.includes(t) || pCode.includes(t))) return true;
-
-    return false;
-  });
+  const matches = candidateLocal
+    .sort((a: any, b: any) => b.score - a.score)
+    .map((item: any) => item.prod);
 
   return res.json({
     success: true,
@@ -1066,8 +1211,8 @@ app.post('/api/inventor/import-session', (req: Request, res: Response) => {
     return res.status(400).json({ success: false, error: 'Faltan datos de la pieza o ensamble de Inventor.' });
   }
 
-  const pNum = partNumber || assemblyName || 'ENSAMBLAJE';
-  const aName = assemblyName || pNum || 'Ensamblaje Inventor';
+  const pNum = partNumber || assemblyName || '';
+  const aName = assemblyName || pNum || '';
   const proj = project || '';
   const sNum = stockNumber || '';
   const des = designer || author || '';
@@ -1081,13 +1226,13 @@ app.post('/api/inventor/import-session', (req: Request, res: Response) => {
     partNumber: pNum,
     name: aName,
     fileType: 'iam' as const,
-    revision: revision || 'Rev. 1',
+    revision: revision || '',
     author: des,
     material: material || '',
     mass: Number(mass) || 0,
     volume: Number(volume) || 0,
     dimensions: dimensions || '',
-    odooProductId: 'NEW',
+    odooProductId: '',
     syncStatus: 'pending' as const,
     lastSync: 'Recién importado de Inventor',
     iProperties: {
@@ -1106,14 +1251,12 @@ app.post('/api/inventor/import-session', (req: Request, res: Response) => {
       Location: loc
     },
     bom: Array.isArray(bom) ? bom.map((item: any, idx: number) => {
+      const rawCom = String(item.com ?? item.COM ?? item.isCom ?? '').trim();
       const isComVal = Boolean(
         item.isCom === true ||
         item.com === true ||
-        ['true', 'si', 's', '1', 'x', 'yes', 'y', 'verdadero'].includes(String(item.com || item.COM || item.isCom || '').toLowerCase()) ||
-        String(item.partNumber || '').toUpperCase().startsWith('COMERCIAL') ||
-        String(item.partNumber || '').toUpperCase().startsWith('ISO') ||
-        String(item.partNumber || '').toUpperCase().startsWith('ROD-') ||
-        String(item.material || '').toUpperCase().includes('NORMALIZADO')
+        rawCom === '✓' ||
+        ['true', 'si', 's', '1', 'x', 'yes', 'y', 'verdadero'].includes(rawCom.toLowerCase())
       );
 
       return {
@@ -1171,98 +1314,7 @@ app.get('/api/inventor/latest', (_req: Request, res: Response) => {
   });
 });
 
-// CAD & ERP synchronized state
-const initialOdooCatalog = [
-  {
-    id: 1055,
-    default_code: '247964',
-    name: '[247964] MOTORREDUCTOR - (ALTERNATIVO) UMI 40 - REL. 1:20 - 0,25 HP (0,187 KW) - 4 POLOS - BRIDA C63/B14 - C/BRAZO REACCION',
-    qty_available: 2,
-    uom_id: 'Unidades',
-    standard_price: 185000
-  },
-  {
-    id: 1056,
-    default_code: 'PIAZ 1258',
-    name: 'PORTA RODAMIENTO BRIDA 4 AGUJEROS EJE Ø 20 - SIN TAPA (PIAZ 1258)',
-    qty_available: 6,
-    uom_id: 'Unidades',
-    standard_price: 32000
-  },
-  {
-    id: 1057,
-    default_code: 'PROD-MOT-50',
-    name: 'MOTORREDUCTOR A SINFÍN Y CORONA STM UMI 50 i=50 0.75kW',
-    qty_available: 3,
-    uom_id: 'Unidades',
-    standard_price: 245000
-  },
-  {
-    id: 1058,
-    default_code: 'PROD-ROD-206',
-    name: 'SOPORTE Y CAJA PORTA RODAMIENTO AUTOALINEABLE UCFL 206',
-    qty_available: 8,
-    uom_id: 'Unidades',
-    standard_price: 28500
-  },
-  {
-    id: 1059,
-    default_code: 'PROD-MALLA-25',
-    name: 'BANDA / MALLA MODULAR PLÁSTICA PASO 25mm PP AZUL',
-    qty_available: 15,
-    uom_id: 'Metros',
-    standard_price: 42000
-  },
-  {
-    id: 1060,
-    default_code: 'PROD-TORN-M10',
-    name: 'TORNILLO CABEZA HEXAGONAL M10 x 25 ACERO INOXIDABLE AISI 304 (ISO 4017)',
-    qty_available: 140,
-    uom_id: 'Unidades',
-    standard_price: 480
-  },
-  {
-    id: 1061,
-    default_code: 'PROD-659-08',
-    name: 'COMERCIAL - ADAPTADOR DE ACOPLAMIENTO 25-38mm',
-    qty_available: 4,
-    uom_id: 'Unidades',
-    standard_price: 18900
-  },
-  {
-    id: 1062,
-    default_code: 'PROD-659-09',
-    name: 'RUEDA DENTADA DE TRACCIÓN Z12 PASO 25mm PA6',
-    qty_available: 12,
-    uom_id: 'Unidades',
-    standard_price: 15400
-  },
-  {
-    id: 1063,
-    default_code: 'TAMBOR SEPARADOR',
-    name: 'TAMBOR SEPARADOR DE SÓLIDOS MAQUINADO',
-    qty_available: 1,
-    uom_id: 'Unidades',
-    standard_price: 95000
-  },
-  {
-    id: 1064,
-    default_code: 'BRAZO ANTIGIRO',
-    name: 'BRAZO ANTIGIRO Y RETENCIÓN DE TORQUE',
-    qty_available: 2,
-    uom_id: 'Unidades',
-    standard_price: 14200
-  },
-  {
-    id: 1065,
-    default_code: 'CUBRE REMACHADO',
-    name: 'CUBRE REMACHADO PROTECCIÓN INOX',
-    qty_available: 4,
-    uom_id: 'Unidades',
-    standard_price: 18600
-  }
-];
-
+// Synced state populated exclusively through Autodesk Inventor Add-In & Odoo ERP
 const mockState: {
   activePart: any | null;
   presets: any[];
@@ -1273,7 +1325,7 @@ const mockState: {
   activePart: null, // Sin ensamblaje predeterminado: solo datos reales transmitidos desde Autodesk Inventor
   purchaseRequisitions: [],
   presets: [],
-  odooProducts: [...initialOdooCatalog],
+  odooProducts: [], // El catálogo se obtiene en vivo desde la base de datos de Odoo
   syncLogs: []
 };
 

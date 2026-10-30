@@ -20,7 +20,9 @@ import {
   SlidersHorizontal,
   Package,
   PlusCircle,
-  HelpCircle
+  HelpCircle,
+  AlertTriangle,
+  Lock
 } from 'lucide-react';
 import { CadPart, BomItem, PurchaseRequisition, OdooProduct } from '../types';
 import * as XLSX from 'xlsx';
@@ -41,6 +43,134 @@ interface ItemProductMapping {
   candidates: OdooProduct[];
   isIncluded: boolean;
 }
+
+// Helper to extract clean product code/term from PIEZA CAD / REFERENCIA (e.g. "[247964]" -> "247964", "(PIAZ 1258)" -> "PIAZ 1258")
+export const extractSearchCode = (partNumber: string): string => {
+  if (!partNumber) return '';
+  const trimmed = partNumber.trim();
+  // 1. Bracket code: [247964] -> 247964
+  const bracket = trimmed.match(/\[([A-Za-z0-9_\-\.\s]+)\]/);
+  if (bracket && bracket[1] && bracket[1].trim().length >= 2) {
+    return bracket[1].trim();
+  }
+  // 2. Paren code: (PIAZ 1258) -> PIAZ 1258
+  const paren = trimmed.match(/\(([A-Za-z0-9_\-\.\s]{3,})\)/);
+  if (paren && paren[1] && paren[1].trim().length >= 2) {
+    const clean = paren[1].trim();
+    if (!['alternativo', 'import', 'estandar', 'acero', 'inox', 'final v4'].includes(clean.toLowerCase())) {
+      return clean;
+    }
+  }
+  // 3. PIAZ pattern
+  const piaz = trimmed.match(/\b(PIAZ\s*\d+)\b/i);
+  if (piaz && piaz[1]) {
+    return piaz[1].trim();
+  }
+  return trimmed;
+};
+
+// Helper to extract specific commercial identifiers (bracketed codes, PIAZ codes, numbers)
+export const extractCommercialCodes = (str: string): { primaryCode: string; allCodes: string[] } => {
+  if (!str) return { primaryCode: '', allCodes: [] };
+  const trimmed = str.trim();
+  const codes: string[] = [];
+
+  // 1. Bracket code: [247964] -> "247964"
+  const bracketMatches = trimmed.match(/\[([A-Za-z0-9_\-\.\s]+)\]/g);
+  if (bracketMatches) {
+    bracketMatches.forEach(b => {
+      const c = b.replace(/[\[\]]/g, '').trim();
+      if (c.length >= 2) codes.push(c);
+    });
+  }
+
+  // 2. Parentheses code: (PIAZ 1258) -> "PIAZ 1258"
+  const parenMatches = trimmed.match(/\(([A-Za-z0-9_\-\.\s]{3,})\)/g);
+  if (parenMatches) {
+    parenMatches.forEach(p => {
+      const c = p.replace(/[\(\)]/g, '').trim();
+      const ignore = ['alternativo', 'import', 'estandar', 'acero', 'inox', 'final v4'];
+      if (c.length >= 2 && !ignore.includes(c.toLowerCase())) {
+        codes.push(c);
+      }
+    });
+  }
+
+  // 3. PIAZ pattern (e.g. PIAZ 1258, PIAZ 083)
+  const piazMatches = trimmed.match(/\b(PIAZ\s*\d+)\b/gi);
+  if (piazMatches) {
+    piazMatches.forEach(p => codes.push(p.trim().toUpperCase()));
+  }
+
+  // 4. Model codes like UMI 40, UCFL 206, SKF 6204
+  const modelMatches = trimmed.match(/\b([A-Z]{2,}\s*\d{2,}[A-Z\d\/-]*)\b/g);
+  if (modelMatches) {
+    modelMatches.forEach(m => {
+      if (!codes.some(c => c.toLowerCase() === m.toLowerCase())) {
+        codes.push(m.trim());
+      }
+    });
+  }
+
+  const uniqueCodes = Array.from(new Set(codes));
+  return {
+    primaryCode: uniqueCodes[0] || '',
+    allCodes: uniqueCodes
+  };
+};
+
+// Helper to check if a tramo matches a product accurately (with word boundaries for numbers like 4)
+export const checkTramoMatch = (prod: OdooProduct, tramo: string): boolean => {
+  const pCode = String(prod.default_code || '').toLowerCase().trim();
+  const pName = String(prod.name || '').toLowerCase().trim();
+  const tNorm = tramo.toLowerCase().trim();
+  if (!tNorm) return false;
+
+  // Exact code match
+  if (pCode === tNorm) return true;
+
+  // For short tokens (<= 2 chars like "4", "2", "20")
+  if (tNorm.length <= 2) {
+    const escaped = tNorm.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const rx = new RegExp(`(^|[^a-zA-Z0-9áéíóúñÁÉÍÓÚÑ])${escaped}([^a-zA-Z0-9áéíóúñÁÉÍÓÚÑ]|$)`, 'i');
+    if (rx.test(pName)) return true;
+    if (rx.test(pCode)) return true;
+    return false;
+  }
+
+  return pName.includes(tNorm) || pCode.includes(tNorm);
+};
+
+// Helper to render text with highlighted matching search terms / tramos
+export const renderHighlightedText = (text: string, tramos: string[]) => {
+  if (!text || tramos.length === 0) return <span>{text}</span>;
+  const validTerms = tramos
+    .map(t => t.trim())
+    .filter(t => t.length >= 2 || /\d/.test(t));
+  if (validTerms.length === 0) return <span>{text}</span>;
+
+  try {
+    const escaped = validTerms.map(t => t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
+    const regex = new RegExp(`(${escaped.join('|')})`, 'gi');
+    const parts = text.split(regex);
+
+    return (
+      <span>
+        {parts.map((part, i) =>
+          regex.test(part) ? (
+            <mark key={i} className="bg-amber-500/30 text-amber-200 px-0.5 rounded font-bold">
+              {part}
+            </mark>
+          ) : (
+            <span key={i}>{part}</span>
+          )
+        )}
+      </span>
+    );
+  } catch {
+    return <span>{text}</span>;
+  }
+};
 
 export const PurchaseRequisitionView: React.FC<PurchaseRequisitionViewProps> = ({
   part,
@@ -66,8 +196,30 @@ export const PurchaseRequisitionView: React.FC<PurchaseRequisitionViewProps> = (
   const [manualUom, setManualUom] = useState('Unidades');
   const [manualMaterial, setManualMaterial] = useState('Comercial');
 
-  // Form Fields
-  const [origin, setOrigin] = useState(() => part ? `${part.partNumber} — ${part.name}` : 'OT-26148 - FLAMARIQUE');
+  // Helpers to initialize fields strictly from Inventor iProperties (matching user color mapping)
+  // 🔴 Red Box: Referencia de Solicitud (Combina Proyecto OT con Nº de pieza)
+  const getOriginFromPart = (p: CadPart | null) => {
+    if (!p) return '';
+    const proj = p.iProperties?.Project?.trim() || '';
+    const pNum = p.iProperties?.PartNumber?.trim() || p.partNumber?.trim() || '';
+    if (proj && pNum) return `${proj} - ${pNum}`;
+    return proj || pNum || '';
+  };
+
+  // 🟡 Yellow Box: Descripción en Odoo (Mapeado directamente del Nº de almacenamiento)
+  const getStockNumberFromPart = (p: CadPart | null) => {
+    return p?.iProperties?.StockNumber?.trim() || '';
+  };
+
+  // 🔵 Blue Box: Autorizador / Diseñador en Odoo (Mapeado desde Diseñador)
+  const getDesignerFromPart = (p: CadPart | null) => {
+    return p?.iProperties?.Designer?.trim() || p?.author?.trim() || '';
+  };
+
+  // Form Fields mapped from iProperties
+  const [origin, setOrigin] = useState(() => getOriginFromPart(part));
+  const [description, setDescription] = useState(() => getStockNumberFromPart(part));
+  const [designer, setDesigner] = useState(() => getDesignerFromPart(part));
   const [scheduleDate, setScheduleDate] = useState(() => {
     const d = new Date(Date.now() + 14 * 86400000);
     return d.toISOString().substring(0, 10);
@@ -144,10 +296,12 @@ export const PurchaseRequisitionView: React.FC<PurchaseRequisitionViewProps> = (
     }
   };
 
-  // Update origin when part changes
+  // Sync state when part or its iProperties change
   useEffect(() => {
     if (part) {
-      setOrigin(`${part.partNumber} — ${part.name}`);
+      setOrigin(getOriginFromPart(part));
+      setDescription(getStockNumberFromPart(part));
+      setDesigner(getDesignerFromPart(part));
     }
   }, [part]);
 
@@ -213,80 +367,31 @@ export const PurchaseRequisitionView: React.FC<PurchaseRequisitionViewProps> = (
     loadInitialData();
   }, []);
 
-// Helper to extract clean product code/term from PIEZA CAD / REFERENCIA (e.g. "[247964]" -> "247964", "(PIAZ 1258)" -> "PIAZ 1258")
-export const extractSearchCode = (partNumber: string): string => {
-  if (!partNumber) return '';
-  const trimmed = partNumber.trim();
-  // 1. Bracket code: [247964] -> 247964
-  const bracket = trimmed.match(/\[([A-Za-z0-9_\-\.\s]+)\]/);
-  if (bracket && bracket[1] && bracket[1].trim().length >= 2) {
-    return bracket[1].trim();
-  }
-  // 2. Paren code: (PIAZ 1258) -> PIAZ 1258
-  const paren = trimmed.match(/\(([A-Za-z0-9_\-\.\s]{3,})\)/);
-  if (paren && paren[1] && paren[1].trim().length >= 2) {
-    const clean = paren[1].trim();
-    if (!['alternativo', 'import', 'estandar', 'acero', 'inox', 'final v4'].includes(clean.toLowerCase())) {
-      return clean;
-    }
-  }
-  // 3. PIAZ pattern
-  const piaz = trimmed.match(/\b(PIAZ\s*\d+)\b/i);
-  if (piaz && piaz[1]) {
-    return piaz[1].trim();
-  }
-  return trimmed;
-};
-
-  // Helper function to tokenize and calculate similarity strictly based on PIEZA CAD / REFERENCIA
+  // Helper function to find the most resembling Odoo product for a BOM item
+  // If not found automatically, user can simply select any product from the dropdown
   const findMatchesForBomItem = (item: BomItem, catalog: OdooProduct[]): { best: OdooProduct | null; type: 'exact' | 'similar' | 'new'; candidates: OdooProduct[] } => {
     if (!catalog || catalog.length === 0) {
       return { best: null, type: 'new', candidates: [] };
     }
 
-    // STRICTLY USE PIEZA CAD / REFERENCIA (item.partNumber) - Description from Inventor is ignored as requested
     const itemPartNumber = String(item.partNumber || '').trim();
     const fullText = itemPartNumber.toLowerCase();
+    const cadCodes = extractCommercialCodes(itemPartNumber);
 
-    // 1. Extract specific codes from brackets [247964], parens (PIAZ 1258), or tokens
-    const extractedCodes: string[] = [];
-
-    // Brackets: e.g. [247964]
-    const bracketMatches = itemPartNumber.match(/\[([A-Za-z0-9_\-\.\s]+)\]/g);
-    if (bracketMatches) {
-      bracketMatches.forEach(b => {
-        const c = b.replace(/[\[\]]/g, '').trim().toLowerCase();
-        if (c.length >= 2) extractedCodes.push(c);
+    // 1. Exact match for any extracted commercial code
+    for (const code of cadCodes.allCodes) {
+      const codeNorm = code.trim().toLowerCase();
+      const codeNoSpaces = codeNorm.replace(/\s+/g, '');
+      const match = catalog.find(p => {
+        const def = String(p.default_code || '').trim().toLowerCase();
+        return def === codeNorm || def.replace(/\s+/g, '') === codeNoSpaces;
       });
-    }
-
-    // Parentheses: e.g. (PIAZ 1258)
-    const parenMatches = itemPartNumber.match(/\(([A-Za-z0-9_\-\.\s]{3,})\)/g);
-    if (parenMatches) {
-      parenMatches.forEach(p => {
-        const c = p.replace(/[\(\)]/g, '').trim().toLowerCase();
-        const ignoreList = ['alternativo', 'import', 'estandar', 'acero', 'inox', 'final v4'];
-        if (c.length >= 2 && !ignoreList.includes(c)) {
-          extractedCodes.push(c);
-        }
-      });
-    }
-
-    // PIAZ pattern
-    const piazMatches = itemPartNumber.match(/\b(PIAZ\s*\d+)\b/gi);
-    if (piazMatches) {
-      piazMatches.forEach(p => extractedCodes.push(p.trim().toLowerCase()));
-    }
-
-    // 2. Check if any extracted code matches a product's default_code directly
-    for (const code of extractedCodes) {
-      const match = catalog.find(p => p.default_code && p.default_code.trim().toLowerCase() === code);
       if (match) {
         return { best: match, type: 'exact', candidates: [match] };
       }
     }
 
-    // 3. Check if any product's default_code is contained inside itemPartNumber or vice-versa
+    // 2. Check if a product's default_code is contained inside itemPartNumber or vice versa
     for (const prod of catalog) {
       const pCode = String(prod.default_code || '').trim().toLowerCase();
       if (pCode.length >= 3) {
@@ -296,26 +401,16 @@ export const extractSearchCode = (partNumber: string): string => {
       }
     }
 
-    // 4. Check exact default_code match with whole partNumber
-    const exactCode = catalog.find(p => p.default_code && p.default_code.trim().toLowerCase() === itemPartNumber.toLowerCase());
+    // 3. Exact full code match
+    const exactCode = catalog.find(p => {
+      const pCode = String(p.default_code || '').trim().toLowerCase();
+      return pCode && pCode === itemPartNumber.toLowerCase();
+    });
     if (exactCode) {
       return { best: exactCode, type: 'exact', candidates: [exactCode] };
     }
 
-    // 5. Check exact name match or if product name is inside itemPartNumber or vice versa
-    const exactName = catalog.find(p => {
-      const pName = String(p.name || '').trim().toLowerCase();
-      return pName && (
-        pName === itemPartNumber.toLowerCase() ||
-        fullText.includes(pName) ||
-        pName.includes(itemPartNumber.toLowerCase())
-      );
-    });
-    if (exactName) {
-      return { best: exactName, type: 'exact', candidates: [exactName] };
-    }
-
-    // 6. Token-based fuzzy matching strictly from itemPartNumber
+    // 4. Token-based fuzzy & engineering keyword matching to find closest products in catalog
     const stopWords = new Set(['de', 'la', 'el', 'en', 'para', 'y', 'con', 'sin', 'un', 'una', '-', '/', 'c/', 'chapa']);
     const getTokens = (str: string) => 
       str.toLowerCase()
@@ -325,7 +420,6 @@ export const extractSearchCode = (partNumber: string): string => {
 
     const itemTokens = getTokens(itemPartNumber);
 
-    // Score all products
     const scored = catalog.map(prod => {
       const prodText = `${prod.default_code || ''} ${prod.name || ''}`.toLowerCase();
       const prodTokens = getTokens(prodText);
@@ -336,21 +430,21 @@ export const extractSearchCode = (partNumber: string): string => {
         if (prodTokens.includes(token)) score += 3;
       }
 
-      // Special priority for key engineering keywords
+      // Priority for key engineering keywords
       const keyKeywords = ['motorreductor', 'rodamient', 'brida', 'tambor', 'reductor', 'umi', 'skf', 'chapa', 'perfil', 'malla', 'tornillo', 'acoplamiento', 'rueda'];
       for (const kw of keyKeywords) {
         if (fullText.includes(kw) && prodText.includes(kw)) {
-          score += 6;
+          score += 5;
         }
       }
 
       return { prod, score };
     })
-    .filter(item => item.score > 2)
+    .filter(item => item.score > 3)
     .sort((a, b) => b.score - a.score);
 
     if (scored.length > 0) {
-      const candidates = scored.slice(0, 5).map(s => s.prod);
+      const candidates = scored.slice(0, 8).map(s => s.prod);
       return {
         best: candidates[0],
         type: 'similar',
@@ -541,28 +635,90 @@ export const extractSearchCode = (partNumber: string): string => {
     }, 250);
   };
 
-  // Real-time combined search results from live Odoo and local catalog cache
-  const combinedSearchResults = useMemo(() => {
-    const query = inlineSearchQuery.trim().toLowerCase();
-    if (!query) {
-      return odooProducts.slice(0, 30);
-    }
-    const filteredLocal = odooProducts.filter(p => {
-      const code = String(p.default_code || '').toLowerCase();
-      const name = String(p.name || '').toLowerCase();
-      if (code.includes(query) || name.includes(query)) return true;
-      const tokens = query.split(/\s+/).filter(t => t.length >= 2);
-      return tokens.length > 0 && tokens.some(t => code.includes(t) || name.includes(t));
-    });
+  // Extract distinct search terms ("tramos") from current inline search input
+  const currentSearchTramos = useMemo(() => {
+    const raw = inlineSearchQuery.trim();
+    if (!raw) return [];
 
-    const list = [...liveSearchResults];
-    for (const lp of filteredLocal) {
-      if (!list.some(c => c.id === lp.id)) {
-        list.push(lp);
+    const stopWords = new Set(['a', 'e', 'o', 'u', 'y', 'd', 'de', 'la', 'el', 'en', 'para', 'con', 'sin', 'del', 'al', 'los', 'las', 'un', 'una', '-', '/', 'c/']);
+    const bracket = (raw.match(/\[(.*?)\]/)?.[1] || '').trim();
+    const paren = (raw.match(/\((PIAZ\s*\d+|[A-Z0-9\-_]{3,})\)/i)?.[1] || '').trim();
+    const piaz = (raw.match(/\b(PIAZ\s*\d+)\b/i)?.[1] || '').trim();
+
+    const cleanTokens = raw
+      .replace(/[\[\](),\-_/]/g, ' ')
+      .replace(/[^a-zA-Z0-9áéíóúñÁÉÍÓÚÑ\s]/g, ' ')
+      .split(/\s+/)
+      .map(t => t.trim())
+      .filter(t => (t.length >= 2 || /\d/.test(t)) && !stopWords.has(t.toLowerCase()));
+
+    const tramosList: string[] = [];
+    if (bracket && !tramosList.includes(bracket)) tramosList.push(bracket);
+    if (paren && !tramosList.includes(paren)) tramosList.push(paren);
+    if (piaz && !tramosList.includes(piaz)) tramosList.push(piaz);
+    for (const tok of cleanTokens) {
+      if (!tramosList.some(t => t.toLowerCase() === tok.toLowerCase())) {
+        tramosList.push(tok);
       }
     }
-    return list;
-  }, [inlineSearchQuery, liveSearchResults, odooProducts]);
+    return tramosList;
+  }, [inlineSearchQuery]);
+
+  // Real-time combined search results from live Odoo and local catalog with multi-term tramos ranking
+  const combinedSearchResults = useMemo(() => {
+    const query = inlineSearchQuery.trim().toLowerCase();
+    const tramos = currentSearchTramos;
+
+    const allCandidatesMap = new Map<number | string, OdooProduct>();
+    for (const prod of liveSearchResults) {
+      allCandidatesMap.set(prod.id, prod);
+    }
+    for (const prod of odooProducts) {
+      if (!allCandidatesMap.has(prod.id)) {
+        allCandidatesMap.set(prod.id, prod);
+      }
+    }
+    const allCandidates = Array.from(allCandidatesMap.values());
+
+    if (!query || tramos.length === 0) {
+      return allCandidates.slice(0, 40).map(p => ({
+        ...p,
+        _matchCount: 0,
+        _totalTramos: 0,
+        _score: 0
+      }));
+    }
+
+    const scored = allCandidates.map(p => {
+      const pCode = String(p.default_code || '').toLowerCase();
+      const pName = String(p.name || '').toLowerCase();
+
+      let matchCount = 0;
+      for (const t of tramos) {
+        if (checkTramoMatch(p, t)) {
+          matchCount++;
+        }
+      }
+
+      let score = matchCount * 25;
+      if (tramos.length > 0 && matchCount === tramos.length) score += 100; // Bonus: todos los tramos coinciden
+      if (`${pCode} ${pName}`.includes(query)) score += 50; // Bonus: coincidencia exacta continua
+      if (p.default_code && tramos.some(t => t.toLowerCase() === p.default_code.toLowerCase())) score += 60; // Bonus: código exacto
+
+      return {
+        ...p,
+        _matchCount: matchCount,
+        _totalTramos: tramos.length,
+        _score: score
+      };
+    });
+
+    // Acotar resultados: si hay productos donde coinciden TODOS los tramos buscados, mostrar solo esos para no mezclar
+    const fullMatches = scored.filter(item => tramos.length > 0 && item._matchCount === tramos.length);
+    const candidateList = fullMatches.length > 0 ? fullMatches : scored.filter(item => item._matchCount > 0);
+
+    return candidateList.sort((a, b) => b._score - a._score);
+  }, [inlineSearchQuery, currentSearchTramos, liveSearchResults, odooProducts]);
 
   // Sync / Re-match all items against Odoo catalog
   const handleSyncCatalogAndMatch = async () => {
@@ -601,18 +757,33 @@ export const extractSearchCode = (partNumber: string): string => {
     }
   };
 
+  // Validation summary for purchase.request submission:
+  // Rule: All included items must have an assigned product from the Odoo database
+  const validationSummary = useMemo(() => {
+    const included = activeItemsToUpload; // items where isIncluded === true
+    const unlinked = included.filter(m => !m.selectedProduct || !m.selectedProduct.id);
+    const canSubmit = included.length > 0 && unlinked.length === 0;
+
+    return {
+      canSubmit,
+      totalIncluded: included.length,
+      unlinkedCount: unlinked.length,
+      unlinkedItems: unlinked
+    };
+  }, [activeItemsToUpload]);
+
   // Local fallback simulation generator (zero network dependency)
   const createLocalSimulation = () => {
     const fakeReqNumber = `REQ2027-${Math.floor(1000 + Math.random() * 9000)}`;
     const newReq: PurchaseRequisition = {
       id: Date.now(),
       name: fakeReqNumber,
-      origin: origin.trim() || (part ? part.partNumber : 'Autodesk Inventor LDM'),
+      origin: origin.trim(),
       state: 'draft',
       ordering_date: new Date().toISOString().substring(0, 10),
       schedule_date: scheduleDate || new Date(Date.now() + 14 * 86400000).toISOString().substring(0, 10),
       timestamp: new Date().toISOString().replace('T', ' ').substring(0, 19),
-      notes: notes || 'Generado desde Autodesk Inventor 2027 — Componentes comerciales para fabricación.',
+      notes: description.trim() || notes || '',
       simulated: true,
       lines: activeItemsToUpload.map((m, idx) => ({
         id: idx + 1,
@@ -645,6 +816,12 @@ export const extractSearchCode = (partNumber: string): string => {
       return;
     }
 
+    // Every included COM item must have an assigned product in Odoo database
+    if (!validationSummary.canSubmit) {
+      setErrorMessage(`Falta asignar producto de Odoo a ${validationSummary.unlinkedCount} componente(s) COM incluido(s). Por favor, seleccioná un producto existente desde el desplegable de cada fila o desmarcá la casilla ING para continuar.`);
+      return;
+    }
+
     if (forceSimulation) {
       // Direct simulation mode requested
       try {
@@ -656,9 +833,12 @@ export const extractSearchCode = (partNumber: string): string => {
             db: '',
             login: '',
             apiKey: '',
-            origin: origin.trim() || (part ? part.partNumber : 'Autodesk Inventor LDM'),
+            name: origin.trim(),
+            origin: origin.trim(),
+            description: description.trim(),
+            designer: designer.trim(),
             scheduleDate,
-            notes: notes || `Solicitud de compra de componentes comerciales — ${origin.trim() || (part ? part.partNumber : 'Autodesk Inventor LDM')}`,
+            notes: description.trim() || notes || '',
             items: activeItemsToUpload.map(m => ({
               partNumber: m.item.partNumber,
               productCode: m.selectedProduct?.default_code || extractSearchCode(m.item.partNumber),
@@ -719,8 +899,12 @@ export const extractSearchCode = (partNumber: string): string => {
       db: odooDb.trim(),
       login: odooLogin.trim(),
       apiKey: odooApiKey.trim(),
-      origin: origin.trim() || (part ? part.partNumber : 'Autodesk Inventor LDM'),
-      notes: notes || `Solicitud de compra de componentes comerciales — ${origin.trim() || (part ? part.partNumber : 'Autodesk Inventor LDM')}`,
+      name: origin.trim(),
+      origin: origin.trim(),
+      description: description.trim(),
+      designer: designer.trim(),
+      notes: description.trim() || notes || '',
+      scheduleDate,
       items: activeItemsToUpload.map(m => ({
         partNumber: m.item.partNumber,
         productCode: m.selectedProduct?.default_code || extractSearchCode(m.item.partNumber),
@@ -876,8 +1060,19 @@ export const extractSearchCode = (partNumber: string): string => {
             <span className="text-slate-400">Cant:</span>
             <span className="font-bold text-emerald-400 font-mono">{totalUnits} un.</span>
             <span className="text-slate-600">|</span>
-            <span className="text-slate-400">Vinculados:</span>
-            <span className="font-bold text-blue-400 font-mono">{linkedCount}/{activeItemsToUpload.length}</span>
+            <span className="text-slate-400">Asignados:</span>
+            <span className="font-bold text-emerald-400 font-mono">
+              {activeItemsToUpload.length - validationSummary.unlinkedCount}/{activeItemsToUpload.length}
+            </span>
+            {validationSummary.unlinkedCount > 0 && (
+              <>
+                <span className="text-slate-600">|</span>
+                <span className="text-amber-400 font-bold font-mono flex items-center space-x-1" title={`${validationSummary.unlinkedCount} sin producto asignado`}>
+                  <AlertTriangle className="w-3.5 h-3.5 text-amber-400 shrink-0" />
+                  <span>{validationSummary.unlinkedCount} sin asignar</span>
+                </span>
+              </>
+            )}
           </div>
 
           {/* Secondary Actions */}
@@ -900,7 +1095,7 @@ export const extractSearchCode = (partNumber: string): string => {
                 ? 'bg-orange-600 text-white border-orange-500' 
                 : 'bg-slate-900 hover:bg-slate-850 text-slate-300 border-slate-800'
             }`}
-            title="Configurar credenciales de Odoo y fecha requerida"
+            title="Configurar campos mapeados de Odoo, credenciales y fecha requerida"
           >
             <SlidersHorizontal className="w-3.5 h-3.5" />
             <span className="hidden sm:inline">Parámetros</span>
@@ -926,17 +1121,33 @@ export const extractSearchCode = (partNumber: string): string => {
             <span className="hidden sm:inline">Añadir COM</span>
           </button>
 
-          {/* Primary Action Button */}
+          {/* Primary Action Button (Enabled once all included items have an Odoo product assigned) */}
           <button
             type="button"
             onClick={() => handleSendPurchaseRequisition(false)}
-            disabled={isSubmitting || activeItemsToUpload.length === 0}
-            className="px-4 py-1.5 rounded-lg bg-gradient-to-r from-orange-500 to-orange-600 hover:from-orange-400 hover:to-orange-500 text-white text-xs font-bold shadow-md flex items-center space-x-2 transition disabled:opacity-50"
+            disabled={isSubmitting || activeItemsToUpload.length === 0 || !validationSummary.canSubmit}
+            className={`px-4 py-1.5 rounded-lg text-xs font-bold shadow-md flex items-center space-x-2 transition ${
+              !validationSummary.canSubmit || activeItemsToUpload.length === 0
+                ? 'bg-slate-800 text-slate-400 border border-slate-700 cursor-not-allowed opacity-75'
+                : 'bg-gradient-to-r from-orange-500 to-orange-600 hover:from-orange-400 hover:to-orange-500 text-white cursor-pointer shadow-orange-500/20'
+            }`}
+            title={
+              !validationSummary.canSubmit
+                ? `Falta asignar producto de Odoo a ${validationSummary.unlinkedCount} pieza(s) COM incluida(s).`
+                : 'Enviar Solicitud de Compra (purchase.request) a Odoo'
+            }
           >
             {isSubmitting ? (
               <>
                 <RefreshCw className="w-3.5 h-3.5 animate-spin" />
                 <span>Enviando...</span>
+              </>
+            ) : !validationSummary.canSubmit ? (
+              <>
+                <Lock className="w-3.5 h-3.5 text-amber-400" />
+                <span>
+                  Faltan asignar ({validationSummary.unlinkedCount} sin producto)
+                </span>
               </>
             ) : (
               <>
@@ -948,22 +1159,119 @@ export const extractSearchCode = (partNumber: string): string => {
         </div>
       </div>
 
+      {/* Mapeo de Datos iProperties -> Odoo ERP Header Bar (Matching user colors from Image 3) */}
+      <div className="bg-slate-950/80 border-b border-slate-800/80 px-5 py-2 flex flex-wrap items-center justify-between gap-3 text-xs shrink-0">
+        <div className="flex items-center space-x-2 text-[11px] text-slate-400 flex-wrap gap-y-1.5">
+          <span className="font-semibold text-slate-300 mr-1">Campos Odoo (purchase.request):</span>
+          
+          {/* 🔴 Red Box: Referencia de Solicitud (Combina Proyecto OT con Nº de pieza) */}
+          <div className="flex items-center space-x-1.5 px-2.5 py-1 rounded-md bg-rose-950/40 border border-rose-500/40 text-rose-200 font-mono text-[11px]" title="Campo Odoo: Referencia de Solicitud (Combina Proyecto OT con Nº de pieza)">
+            <span className="w-2 h-2 rounded-full bg-rose-500"></span>
+            <span className="text-rose-400 font-bold">Referencia de Solicitud:</span>
+            <span className="font-bold text-white truncate max-w-[260px]">{origin}</span>
+          </div>
+
+          {/* 🟡 Yellow Box: Descripción en Odoo (Mapeado directamente del Nº de almacenamiento) */}
+          <div className="flex items-center space-x-1.5 px-2.5 py-1 rounded-md bg-amber-950/40 border border-amber-500/40 text-amber-200 font-mono text-[11px]" title="Campo Odoo: Descripción (Mapeado directamente desde el Nº de almacenamiento de las iProperties de Inventor)">
+            <span className="w-2 h-2 rounded-full bg-amber-500"></span>
+            <span className="text-amber-400 font-bold">Descripción (Almacenamiento):</span>
+            <span className="font-bold text-white truncate max-w-[150px]">{description}</span>
+          </div>
+
+          {/* 🔵 Blue Box: Autorizador / Diseñador en Odoo */}
+          <div className="flex items-center space-x-1.5 px-2.5 py-1 rounded-md bg-blue-950/40 border border-blue-500/40 text-blue-200 font-mono text-[11px]" title="Campo Odoo: Autorizador / Diseñador (Mapeado desde el campo Diseñador para asignación del responsable)">
+            <span className="w-2 h-2 rounded-full bg-blue-500"></span>
+            <span className="text-blue-400 font-bold">Autorizador:</span>
+            <span className="font-bold text-white">{designer}</span>
+          </div>
+        </div>
+
+        <div className="flex items-center space-x-2 text-[11px] text-slate-400">
+          <span>Fecha requerida:</span>
+          <span className="font-mono text-slate-200 font-semibold">{scheduleDate}</span>
+        </div>
+      </div>
+
+      {/* Guidance Alert Banner when some included COM items don't have an assigned Odoo product */}
+      {!validationSummary.canSubmit && activeItemsToUpload.length > 0 && (
+        <div className="bg-amber-950/90 border-b border-amber-800 px-5 py-2.5 text-xs text-amber-200 flex items-center justify-between gap-3 animate-in fade-in shrink-0">
+          <div className="flex items-center space-x-2.5">
+            <AlertTriangle className="w-4 h-4 text-amber-400 shrink-0" />
+            <div>
+              <span className="font-bold text-amber-300">Asignación requerida: </span>
+              <span>
+                Hay <strong>{validationSummary.unlinkedCount}</strong> pieza(s) COM sin producto asignado. Cada elemento comercial incluido debe tener asignado un producto existente de Odoo antes de enviar la solicitud (o desmarcá la casilla ING de las que no desees pedir).
+              </span>
+              <span className="text-slate-300 ml-1">
+                Hacé clic en <strong>"Seleccionar producto"</strong> en cada fila pendiente para buscarlo y elegirlo del desplegable.
+              </span>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Slide-down Settings Panel */}
       {isSettingsOpen && (
         <div className="bg-slate-950/95 border-b border-slate-800 px-6 py-4 space-y-3 text-xs animate-in slide-in-from-top-2 duration-150">
           <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
+            {/* 🔴 Red Box: Referencia de Solicitud */}
             <div>
-              <label className="text-[11px] font-semibold text-slate-300 block mb-1">
-                Documento de Origen / Referencia:
-              </label>
+              <div className="flex items-center justify-between mb-1">
+                <label className="text-[11px] font-semibold text-rose-300">
+                  🔴 Referencia de Solicitud (OT - Nº Pieza):
+                </label>
+                <span className="text-[9px] font-mono text-rose-400 bg-rose-950/60 px-1 rounded border border-rose-500/40">
+                  name / ref
+                </span>
+              </div>
               <input
                 type="text"
                 value={origin}
                 onChange={e => setOrigin(e.target.value)}
-                className="w-full bg-slate-900 border border-slate-700 rounded px-2.5 py-1.5 text-slate-100 font-mono text-xs focus:border-orange-500 focus:outline-none"
+                placeholder="Proyecto - Nº de Pieza (desde iProperties)"
+                className="w-full bg-slate-900 border border-rose-500/60 rounded px-2.5 py-1.5 text-slate-100 font-mono text-xs focus:border-rose-400 focus:outline-none"
               />
             </div>
 
+            {/* 🟡 Yellow Box: Descripción en Odoo */}
+            <div>
+              <div className="flex items-center justify-between mb-1">
+                <label className="text-[11px] font-semibold text-amber-300">
+                  🟡 Descripción (Almacenamiento):
+                </label>
+                <span className="text-[9px] font-mono text-amber-400 bg-amber-950/60 px-1 rounded border border-amber-500/40">
+                  iProperties: StockNumber
+                </span>
+              </div>
+              <input
+                type="text"
+                value={description}
+                onChange={e => setDescription(e.target.value)}
+                placeholder="Nº de Almacenamiento (desde iProperties)"
+                className="w-full bg-slate-900 border border-amber-500/60 rounded px-2.5 py-1.5 text-slate-100 font-mono text-xs focus:border-amber-400 focus:outline-none"
+              />
+            </div>
+
+            {/* 🔵 Blue Box: Autorizador / Diseñador */}
+            <div>
+              <div className="flex items-center justify-between mb-1">
+                <label className="text-[11px] font-semibold text-blue-300">
+                  🔵 Autorizador (Diseñador):
+                </label>
+                <span className="text-[9px] font-mono text-blue-400 bg-blue-950/60 px-1 rounded border border-blue-500/40">
+                  iProperties: Designer
+                </span>
+              </div>
+              <input
+                type="text"
+                value={designer}
+                onChange={e => setDesigner(e.target.value)}
+                placeholder="Iniciales o Usuario Diseñador (desde iProperties)"
+                className="w-full bg-slate-900 border border-blue-500/60 rounded px-2.5 py-1.5 text-slate-100 font-mono text-xs focus:border-blue-400 focus:outline-none"
+              />
+            </div>
+
+            {/* Fecha Requerida */}
             <div>
               <label className="text-[11px] font-semibold text-slate-300 block mb-1">
                 Fecha Requerida de Entrega:
@@ -1177,6 +1485,7 @@ export const extractSearchCode = (partNumber: string): string => {
               {displayedMappings.map((m, idx) => {
                 const isSearchingThis = activeSearchItemId === m.item.id;
                 const p = m.selectedProduct;
+                const isUnlinked = m.isIncluded && (!p || !p.id);
 
                 return (
                   <tr 
@@ -1184,6 +1493,8 @@ export const extractSearchCode = (partNumber: string): string => {
                     className={`transition ${
                       !m.isIncluded 
                         ? 'opacity-40 bg-slate-950/40' 
+                        : isUnlinked
+                        ? 'bg-amber-950/20 border-l-4 border-l-amber-500 hover:bg-amber-950/30'
                         : idx % 2 === 0 
                         ? 'bg-slate-900/50 hover:bg-slate-850/60' 
                         : 'bg-slate-900/20 hover:bg-slate-850/60'
@@ -1225,7 +1536,7 @@ export const extractSearchCode = (partNumber: string): string => {
 
                     {/* Part Number */}
                     <td className="px-3 py-2 font-mono font-bold text-orange-300">
-                      {m.item.partNumber}
+                      <div>{m.item.partNumber}</div>
                     </td>
 
                     {/* Description */}
@@ -1265,7 +1576,7 @@ export const extractSearchCode = (partNumber: string): string => {
                               type="text"
                               value={inlineSearchQuery}
                               onChange={e => handleSearchInputChange(e.target.value)}
-                              placeholder="Ingresá descripción o código para buscar en Odoo..."
+                              placeholder="Buscar por tramos (ej: 'RODAMIENTO PIAZ 1321', código o nombre)..."
                               className="w-full bg-transparent text-xs text-white focus:outline-none placeholder-slate-500"
                               autoFocus
                             />
@@ -1278,14 +1589,26 @@ export const extractSearchCode = (partNumber: string): string => {
                             </button>
                           </div>
 
-                          {/* Header info */}
-                          <div className="flex items-center justify-between text-[10px] text-slate-400 px-1">
-                            <span>Productos en Odoo ({combinedSearchResults.length} disponibles)</span>
+                          {/* Header info with Tramos chips */}
+                          <div className="flex flex-wrap items-center justify-between gap-1 text-[10px] text-slate-400 px-1">
+                            <div className="flex flex-wrap items-center gap-1">
+                              <span>Resultados ({combinedSearchResults.length})</span>
+                              {currentSearchTramos.length > 0 && (
+                                <div className="flex flex-wrap items-center gap-1 ml-1">
+                                  <span className="text-slate-500">Tramos:</span>
+                                  {currentSearchTramos.map((tr, idx) => (
+                                    <span key={idx} className="bg-amber-950/60 border border-amber-600/40 text-amber-300 px-1 py-0.2 rounded font-mono text-[9px]">
+                                      {tr}
+                                    </span>
+                                  ))}
+                                </div>
+                              )}
+                            </div>
                             {inlineSearchQuery && (
                               <button 
                                 type="button" 
                                 onClick={() => { setInlineSearchQuery(''); handleSearchInputChange(''); }}
-                                className="text-orange-400 hover:underline"
+                                className="text-orange-400 hover:underline shrink-0"
                               >
                                 Limpiar filtro
                               </button>
@@ -1293,7 +1616,7 @@ export const extractSearchCode = (partNumber: string): string => {
                           </div>
 
                           {/* Candidates & Search Results */}
-                          <div className="max-h-52 overflow-y-auto space-y-1 divide-y divide-slate-850">
+                          <div className="max-h-56 overflow-y-auto space-y-1 divide-y divide-slate-850">
                             {/* Option: Create New Product */}
                             <button
                               type="button"
@@ -1317,81 +1640,101 @@ export const extractSearchCode = (partNumber: string): string => {
                                 No se encontraron productos coincidentes en Odoo para "{inlineSearchQuery}".
                               </div>
                             ) : (
-                              combinedSearchResults.map(prod => (
-                                <button
-                                  key={prod.id}
-                                  type="button"
-                                  onClick={() => handleSelectProduct(m.item.id, prod, 'manual')}
-                                  className="w-full text-left p-1.5 rounded hover:bg-slate-800/80 transition flex items-center justify-between gap-2 border border-transparent hover:border-slate-700"
-                                >
-                                  <div className="truncate min-w-0">
-                                    <div className="flex items-center space-x-1.5">
-                                      <span className="font-mono font-bold text-orange-400 text-[10px] shrink-0">
-                                        {prod.default_code ? `[${prod.default_code}]` : ''}
-                                      </span>
-                                      <span className="text-slate-200 font-medium truncate text-xs">
-                                        {prod.name}
-                                      </span>
+                              combinedSearchResults.map(prod => {
+                                const isFullTramosMatch = (prod as any)._totalTramos > 0 && (prod as any)._matchCount === (prod as any)._totalTramos;
+                                const hasPartialMatch = (prod as any)._totalTramos > 0 && (prod as any)._matchCount > 0;
+
+                                return (
+                                  <button
+                                    key={prod.id}
+                                    type="button"
+                                    onClick={() => handleSelectProduct(m.item.id, prod, 'manual')}
+                                    className={`w-full text-left p-1.5 rounded transition flex items-center justify-between gap-2 hover:bg-slate-800/80 border ${
+                                      isFullTramosMatch 
+                                        ? 'border-emerald-500/40 bg-emerald-950/10' 
+                                        : 'border-transparent hover:border-slate-700'
+                                    }`}
+                                  >
+                                    <div className="truncate min-w-0">
+                                      <div className="flex items-center space-x-1.5">
+                                        <span className="font-mono font-bold text-[10px] shrink-0 text-orange-400">
+                                          {prod.default_code ? `[${prod.default_code}]` : ''}
+                                        </span>
+                                        <span className="text-slate-200 font-medium truncate text-xs">
+                                          {renderHighlightedText(prod.name, currentSearchTramos)}
+                                        </span>
+                                        {isFullTramosMatch ? (
+                                          <span className="text-[9px] px-1 py-0.2 rounded font-semibold bg-emerald-500/20 text-emerald-300 border border-emerald-500/40 shrink-0">
+                                            ✓ Todos los tramos
+                                          </span>
+                                        ) : hasPartialMatch ? (
+                                          <span className="text-[9px] px-1 py-0.2 rounded font-semibold bg-amber-500/20 text-amber-300 border border-amber-500/30 shrink-0">
+                                            {(prod as any)._matchCount}/{(prod as any)._totalTramos} tramos
+                                          </span>
+                                        ) : null}
+                                      </div>
+                                      <div className="text-[10px] text-slate-400 font-mono flex items-center space-x-2 mt-0.5">
+                                        <span>ID: {prod.id}</span>
+                                        <span>•</span>
+                                        <span className="text-emerald-400">Stock: {prod.qty_available} {prod.uom_id}</span>
+                                        {prod.standard_price > 0 && <span>• ${prod.standard_price.toLocaleString('es-AR')}</span>}
+                                      </div>
                                     </div>
-                                    <div className="text-[10px] text-slate-400 font-mono flex items-center space-x-2 mt-0.5">
-                                      <span>ID: {prod.id}</span>
-                                      <span>•</span>
-                                      <span className="text-emerald-400">Stock: {prod.qty_available} {prod.uom_id}</span>
-                                      {prod.standard_price > 0 && <span>• ${prod.standard_price.toLocaleString('es-AR')}</span>}
-                                    </div>
-                                  </div>
-                                  <span className="text-[10px] px-2 py-0.5 rounded bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 shrink-0 font-semibold hover:bg-emerald-500 hover:text-white transition">
-                                    Vincular
-                                  </span>
-                                </button>
-                              ))
+                                    <span className="text-[10px] px-2 py-0.5 rounded border shrink-0 font-semibold transition bg-emerald-500/20 text-emerald-300 border-emerald-500/30 hover:bg-emerald-500 hover:text-white">
+                                      Vincular
+                                    </span>
+                                  </button>
+                                );
+                              })
                             )}
                           </div>
                         </div>
                       ) : (
                         /* Product Preview Card or Interactive Search Trigger */
                         p ? (
-                          <div className="flex items-center justify-between p-1.5 rounded-lg bg-slate-950/80 border border-slate-800 hover:border-slate-700 transition gap-2">
-                            <div className="truncate min-w-0">
-                              <div className="flex items-center space-x-1.5 truncate">
-                                <span className="font-mono font-bold text-orange-400 text-[10px] shrink-0">
-                                  {p.default_code ? `[${p.default_code}]` : `ID:${p.id}`}
-                                </span>
-                                <span className="text-slate-200 truncate font-medium text-xs" title={p.name}>
-                                  {p.name}
-                                </span>
+                          <div className="p-1.5 rounded-lg border transition gap-2 bg-slate-950/80 border-slate-800 hover:border-slate-700">
+                            <div className="flex items-center justify-between gap-2">
+                              <div className="truncate min-w-0">
+                                <div className="flex items-center space-x-1.5 truncate">
+                                  <span className="font-mono font-bold text-[10px] shrink-0 text-orange-400">
+                                    {p.default_code ? `[${p.default_code}]` : `ID:${p.id}`}
+                                  </span>
+                                  <span className="text-slate-200 truncate font-medium text-xs" title={p.name}>
+                                    {p.name}
+                                  </span>
+                                </div>
+                                <div className="text-[10px] text-slate-400 font-mono flex items-center space-x-2 mt-0.5">
+                                  <span>ID Odoo: {p.id}</span>
+                                  <span>•</span>
+                                  <span className="text-emerald-400">Stock: {p.qty_available} {p.uom_id}</span>
+                                </div>
                               </div>
-                              <div className="text-[10px] text-slate-400 font-mono flex items-center space-x-2 mt-0.5">
-                                <span>ID Odoo: {p.id}</span>
-                                <span>•</span>
-                                <span className="text-emerald-400">Stock: {p.qty_available} {p.uom_id}</span>
-                              </div>
-                            </div>
 
-                            {/* Quick Change / Select Button & Unlink */}
-                            <div className="flex items-center space-x-1 shrink-0">
-                              <button
-                                type="button"
-                                onClick={() => {
-                                  setActiveSearchItemId(m.item.id);
-                                  const initialQuery = p.default_code || extractSearchCode(m.item.partNumber);
-                                  setInlineSearchQuery(initialQuery);
-                                  handleSearchInputChange(initialQuery);
-                                }}
-                                className="px-2 py-1 rounded bg-slate-850 hover:bg-slate-800 text-slate-300 hover:text-white border border-slate-700 text-[10px] font-semibold flex items-center space-x-1 transition"
-                                title="Cambiar producto vinculado en Odoo"
-                              >
-                                <span>Cambiar</span>
-                                <ChevronDown className="w-3 h-3 text-slate-400" />
-                              </button>
-                              <button
-                                type="button"
-                                onClick={() => handleSelectProduct(m.item.id, null, 'new')}
-                                className="p-1 rounded bg-slate-850 hover:bg-rose-900/60 text-slate-400 hover:text-rose-300 border border-slate-700 text-[10px] transition"
-                                title="Desvincular (buscar otro o crear como nuevo)"
-                              >
-                                <X className="w-3 h-3" />
-                              </button>
+                              {/* Quick Change / Select Button & Unlink */}
+                              <div className="flex items-center space-x-1 shrink-0">
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    setActiveSearchItemId(m.item.id);
+                                    const initialQuery = p.default_code || extractSearchCode(m.item.partNumber);
+                                    setInlineSearchQuery(initialQuery);
+                                    handleSearchInputChange(initialQuery);
+                                  }}
+                                  className="px-2 py-1 rounded border text-[10px] font-semibold flex items-center space-x-1 transition bg-slate-850 hover:bg-slate-800 text-slate-300 hover:text-white border-slate-700"
+                                  title="Cambiar producto vinculado en Odoo"
+                                >
+                                  <span>Cambiar</span>
+                                  <ChevronDown className="w-3 h-3 text-slate-400" />
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => handleSelectProduct(m.item.id, null, 'new')}
+                                  className="p-1 rounded bg-slate-850 hover:bg-rose-900/60 text-slate-400 hover:text-rose-300 border border-slate-700 text-[10px] transition"
+                                  title="Desvincular (para seleccionar otro del catálogo)"
+                                >
+                                  <X className="w-3 h-3" />
+                                </button>
+                              </div>
                             </div>
                           </div>
                         ) : (
@@ -1402,13 +1745,19 @@ export const extractSearchCode = (partNumber: string): string => {
                               setInlineSearchQuery(initialQuery);
                               handleSearchInputChange(initialQuery);
                             }}
-                            className="flex items-center justify-between p-1.5 rounded-lg bg-slate-950/90 border border-amber-500/50 hover:border-orange-500 cursor-pointer transition group"
+                            className={`flex items-center justify-between p-1.5 rounded-lg border transition group cursor-pointer ${
+                              m.isIncluded
+                                ? 'bg-amber-950/30 border-amber-500/70 hover:border-amber-400'
+                                : 'bg-slate-950/90 border-slate-800 hover:border-slate-700'
+                            }`}
                             title="Hacer clic para abrir buscador y desplegable de productos Odoo"
                           >
                             <div className="flex items-center space-x-2 truncate">
                               <Search className="w-3.5 h-3.5 text-amber-400 shrink-0 group-hover:scale-110 transition-transform" />
                               <span className="text-slate-300 text-xs truncate">
-                                Buscar producto en Odoo (código o referencia CAD)...
+                                {m.isIncluded 
+                                  ? '⚠️ Sin producto en Odoo (Requerido para enviar solicitud)...' 
+                                  : 'Buscar producto en Odoo (código o referencia CAD)...'}
                               </span>
                             </div>
                             <div className="flex items-center space-x-1 shrink-0">
@@ -1424,26 +1773,41 @@ export const extractSearchCode = (partNumber: string): string => {
 
                     {/* Mapping Match Status */}
                     <td className="px-3 py-2 text-center">
-                      {m.matchType === 'exact' && (
-                        <span className="px-2 py-0.5 rounded-full text-[10px] font-mono font-bold bg-emerald-950/70 text-emerald-300 border border-emerald-500/40 inline-flex items-center space-x-1">
-                          <Check className="w-3 h-3 text-emerald-400" />
-                          <span>Exacto</span>
-                        </span>
+                      {isUnlinked && (
+                        <div className="flex flex-col items-center space-y-0.5">
+                          <span className="px-2 py-0.5 rounded-full text-[10px] font-mono font-bold bg-amber-950/80 text-amber-300 border border-amber-500/50 inline-flex items-center space-x-1">
+                            <AlertCircle className="w-3 h-3 text-amber-400" />
+                            <span>Sin Vincular</span>
+                          </span>
+                          <span className="text-[9px] text-amber-400 font-medium">Requerido</span>
+                        </div>
                       )}
-                      {m.matchType === 'similar' && (
-                        <span className="px-2 py-0.5 rounded-full text-[10px] font-mono font-bold bg-amber-950/70 text-amber-300 border border-amber-500/40 inline-flex items-center space-x-1" title={`${m.candidates.length} productos similares encontrados en Odoo`}>
-                          <Sparkles className="w-3 h-3 text-amber-400" />
-                          <span>Similar ({m.candidates.length})</span>
-                        </span>
+
+                      {!isUnlinked && p && (
+                        <div className="flex flex-col items-center space-y-0.5">
+                          <span className={`px-2 py-0.5 rounded-full text-[10px] font-mono font-bold inline-flex items-center space-x-1 border ${
+                            m.matchType === 'exact' 
+                              ? 'bg-emerald-950/70 text-emerald-300 border-emerald-500/40' 
+                              : m.matchType === 'manual'
+                              ? 'bg-blue-950/70 text-blue-300 border-blue-500/40'
+                              : 'bg-teal-950/70 text-teal-300 border-teal-500/40'
+                          }`}>
+                            <Check className="w-3 h-3" />
+                            <span>
+                              {m.matchType === 'exact' ? 'Exacto' : m.matchType === 'manual' ? 'Manual' : 'Sugerido'}
+                            </span>
+                          </span>
+                          {p.default_code && (
+                            <span className="text-[9px] text-slate-400 font-mono">
+                              [{p.default_code}]
+                            </span>
+                          )}
+                        </div>
                       )}
-                      {m.matchType === 'manual' && (
-                        <span className="px-2 py-0.5 rounded-full text-[10px] font-mono font-bold bg-blue-950/70 text-blue-300 border border-blue-500/40 inline-flex items-center space-x-1">
-                          <span>Manual</span>
-                        </span>
-                      )}
-                      {m.matchType === 'new' && (
-                        <span className="px-2 py-0.5 rounded-full text-[10px] font-mono text-slate-400 bg-slate-800 border border-slate-700 inline-flex items-center space-x-1">
-                          <span>Crear</span>
+
+                      {!m.isIncluded && !p && (
+                        <span className="px-2 py-0.5 rounded-full text-[10px] font-mono text-slate-500 bg-slate-800 border border-slate-700">
+                          Desmarcado
                         </span>
                       )}
                     </td>

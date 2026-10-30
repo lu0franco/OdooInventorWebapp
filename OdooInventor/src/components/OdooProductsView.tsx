@@ -24,12 +24,41 @@ export const OdooProductsView: React.FC<OdooProductsViewProps> = ({
   const [searchTerm, setSearchTerm] = useState('');
   const [filterType, setFilterType] = useState<'all' | 'product' | 'consu'>('all');
 
+  const stopWords = new Set(['a', 'e', 'o', 'u', 'y', 'd', 'de', 'la', 'el', 'en', 'para', 'con', 'sin', 'del', 'al', 'los', 'las', 'un', 'una', '-', '/', 'c/']);
+  const tramos = searchTerm
+    .replace(/[\[\](),\-_/]/g, ' ')
+    .replace(/[^a-zA-Z0-9áéíóúñÁÉÍÓÚÑ\s]/g, ' ')
+    .split(/\s+/)
+    .map(t => t.trim())
+    .filter(t => (t.length >= 2 || /\d/.test(t)) && !stopWords.has(t.toLowerCase()));
+
   const filteredProducts = products.filter(p => {
-    const matchesSearch = 
-      p.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      p.default_code.toLowerCase().includes(searchTerm.toLowerCase());
     const matchesType = filterType === 'all' || p.type === filterType;
-    return matchesSearch && matchesType;
+    if (!matchesType) return false;
+
+    if (!searchTerm.trim()) return true;
+
+    const pName = (p.name || '').toLowerCase();
+    const pCode = (p.default_code || '').toLowerCase();
+    const fullText = `${pCode} ${pName}`;
+
+    // If exact continuous match
+    if (fullText.includes(searchTerm.trim().toLowerCase())) return true;
+
+    // Multi-term tramos: all tramos must match accurately
+    if (tramos.length > 0) {
+      return tramos.every(tr => {
+        const tNorm = tr.toLowerCase().trim();
+        if (tNorm.length <= 2) {
+          const escaped = tNorm.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+          const rx = new RegExp(`(^|[^a-zA-Z0-9áéíóúñÁÉÍÓÚÑ])${escaped}([^a-zA-Z0-9áéíóúñÁÉÍÓÚÑ]|$)`, 'i');
+          return rx.test(pName) || rx.test(pCode);
+        }
+        return fullText.includes(tNorm);
+      });
+    }
+
+    return true;
   });
 
   return (

@@ -1,4 +1,6 @@
 {
   "name": "OdooInventor",
-  "description": "Autodesk Inventor & Odoo ERP integration hub — test JSON-RPC connectivity, synchronize parts, BOMs, inventory, and manage CAD-ERP workflows."
+  "description": "Autodesk Inventor & Odoo ERP integration hub — test JSON-RPC connectivity, synchronize parts, BOMs, inventory, and manage CAD-ERP workflows.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
 }

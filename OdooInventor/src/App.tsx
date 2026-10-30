@@ -111,26 +111,30 @@ export default function App() {
       }));
 
       const newPart: CadPart = {
-        partNumber: payload.partNumber || 'ASM-INVENTOR',
-        name: payload.assemblyName || payload.name || payload.description || 'Ensamblaje Autodesk Inventor',
+        partNumber: payload.partNumber || payload.assemblyName || '',
+        name: payload.assemblyName || payload.name || payload.description || payload.partNumber || '',
         fileType: 'iam',
-        revision: payload.revision || 'Rev. 1',
-        author: payload.author || 'flucero (Inventor 2027)',
-        material: payload.material || 'Acero Inoxidable / Normalizados',
+        revision: payload.revision || '',
+        author: payload.author || payload.designer || '',
+        material: payload.material || '',
         mass: Number(payload.mass) || 0,
         volume: Number(payload.volume) || 0,
-        dimensions: payload.dimensions || 'N/A',
-        odooProductId: '1048',
+        dimensions: payload.dimensions || '',
+        odooProductId: payload.odooProductId || '',
         syncStatus: 'pending',
         lastSync: 'Recién cargado desde ' + sourceName,
         iProperties: payload.iProperties || {
-          Title: payload.description || payload.assemblyName || 'Ensamblaje Inventor',
-          Subject: 'OT-26148',
-          Company: 'Deblasi Soluciones Industriales',
-          Manager: 'Ingeniería Mecánica',
-          CostCenter: 'CC-ING',
+          Title: payload.description || payload.assemblyName || payload.name || '',
+          Subject: payload.project || '',
+          Company: payload.company || payload.vendor || '',
+          Manager: payload.designer || payload.author || '',
+          CostCenter: '',
           StandardCost: 0,
-          StockLocation: 'WH/Stock'
+          StockLocation: '',
+          PartNumber: payload.partNumber || '',
+          StockNumber: payload.stockNumber || '',
+          Project: payload.project || '',
+          Designer: payload.designer || payload.author || ''
         },
         bom: items
       };

@@ -36,19 +36,19 @@ export const AssemblyPropertiesView: React.FC<AssemblyPropertiesViewProps> = ({
   const [isEditing, setIsEditing] = useState(false);
 
   const defaultIProps = useMemo(() => ({
-    Title: part.iProperties?.Title || part.name || 'SEPARADOR DE SOLIDOS_R4.iam (ANTIGUO)',
-    Subject: part.iProperties?.Subject || 'OT-26282',
-    Company: part.iProperties?.Company || 'FINCA BONI',
-    Manager: part.iProperties?.Manager || 'FL',
-    CostCenter: part.iProperties?.CostCenter || 'CC-ING-01',
+    Title: part.iProperties?.Title || part.name || '',
+    Subject: part.iProperties?.Subject || '',
+    Company: part.iProperties?.Company || '',
+    Manager: part.iProperties?.Manager || '',
+    CostCenter: part.iProperties?.CostCenter || '',
     StandardCost: part.iProperties?.StandardCost ?? 0,
-    StockLocation: part.iProperties?.StockLocation || 'WH/Stock',
-    PartNumber: part.iProperties?.PartNumber || part.partNumber || 'SEPARADOR DE SOLIDOS',
-    StockNumber: part.iProperties?.StockNumber || 'OT-26282.04',
-    Project: part.iProperties?.Project || 'OT-26282',
-    Designer: part.iProperties?.Designer || 'FL',
-    Vendor: part.iProperties?.Vendor || 'FINCA BONI',
-    Location: part.iProperties?.Location || 'D:\\PROYECTOS\\OT-24019 - D.606.B V2\\01 - DIBUJOS\\MODIFICACIONES\\SEPARADOR ESTATICO\\SEPARADOR DE SOLIDOS_R4.iam'
+    StockLocation: part.iProperties?.StockLocation || '',
+    PartNumber: part.iProperties?.PartNumber || part.partNumber || '',
+    StockNumber: part.iProperties?.StockNumber || '',
+    Project: part.iProperties?.Project || '',
+    Designer: part.iProperties?.Designer || '',
+    Vendor: part.iProperties?.Vendor || '',
+    Location: part.iProperties?.Location || ''
   }), [part]);
 
   const [propsState, setPropsState] = useState(defaultIProps);
@@ -211,7 +211,7 @@ export const AssemblyPropertiesView: React.FC<AssemblyPropertiesViewProps> = ({
               <span className="font-mono text-cyan-300 truncate">{part.name}</span>
             </div>
             <div className="text-[10px] font-mono text-slate-400 truncate" title={propsState.Location}>
-              {propsState.Location || 'D:\\PROYECTOS\\OT-24019 - D.606.B V2\\01 - DIBUJOS\\SEPARADOR DE SOLIDOS_R4.iam'}
+              {propsState.Location || 'Sin ruta de archivo especificada'}
             </div>
           </div>
 
